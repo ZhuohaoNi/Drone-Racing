@@ -148,6 +148,41 @@ class PPO:
         ) in generator:
             # TODO ----- START -----
             # Implement the PPO update step
+            if getattr(self.actor_critic, "is_recurrent", False):
+                self.actor_critic.act(observations, masks=episode_masks, hidden_states=hidden_states[0])
+                values = self.actor_critic.evaluate(critic_observations, masks=episode_masks, hidden_states=hidden_states[1])
+            else:
+                self.actor_critic.update_distribution(observations)
+                values = self.actor_critic.evaluate(critic_observations)
+
+            log_probs = self.actor_critic.get_actions_log_prob(sampled_actions)
+            ratio = torch.exp(log_probs - prev_log_probs)
+
+            surrogate_loss_1 = advantage_estimates * ratio
+            surrogate_loss_2 = advantage_estimates * torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param)
+            surrogate_loss = -torch.min(surrogate_loss_1, surrogate_loss_2).mean()
+
+            if self.use_clipped_value_loss:
+                value_pred_clipped = value_targets + (values - value_targets).clamp(-self.clip_param, self.clip_param)
+                value_losses = (values - discounted_returns).pow(2)
+                value_losses_clipped = (value_pred_clipped - discounted_returns).pow(2)
+                value_loss = torch.max(value_losses, value_losses_clipped).mean()
+            else:
+                value_loss = (values - discounted_returns).pow(2).mean()
+
+            entropy_batch = self.actor_critic.entropy
+            entropy_loss = entropy_batch.mean()
+
+            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_loss
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+            self.optimizer.step()
+
+            mean_value_loss += value_loss.item()
+            mean_surrogate_loss += surrogate_loss.item()
+            mean_entropy += entropy_loss.item()
             # TODO ----- END -----
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
