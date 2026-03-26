@@ -124,6 +124,7 @@ class PPO:
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
+        mean_kl = 0
 
         # generator for mini batches
         if self.actor_critic.is_recurrent:
@@ -153,6 +154,12 @@ class PPO:
             value_batch = self.actor_critic.evaluate(critic_observations)
 
             actions_log_prob_batch = actions_log_prob_batch.view(-1, 1)
+
+            # Compute approximate KL divergence for adaptive LR
+            with torch.no_grad():
+                log_ratio = actions_log_prob_batch - prev_log_probs
+                kl = ((torch.exp(log_ratio) - 1) - log_ratio).mean()
+                mean_kl += kl.item()
 
             # Surrogate loss
             ratio = torch.exp(actions_log_prob_batch - prev_log_probs)
@@ -191,6 +198,17 @@ class PPO:
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
+        mean_kl /= num_updates
+
+        # Adaptive learning rate schedule based on KL divergence
+        if self.schedule == "adaptive":
+            if mean_kl > self.desired_kl * 2.0:
+                self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+            elif mean_kl < self.desired_kl / 2.0:
+                self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+            for param_group in self.optimizer.param_groups:
+                param_group["lr"] = self.learning_rate
+
         # Clear the storage
         self.storage.clear()
 
