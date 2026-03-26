@@ -148,6 +148,43 @@ class PPO:
         ) in generator:
             # TODO ----- START -----
             # Implement the PPO update step
+            self.actor_critic.update_distribution(observations)
+            actions_log_prob_batch = self.actor_critic.get_actions_log_prob(sampled_actions)
+            value_batch = self.actor_critic.evaluate(critic_observations)
+
+            actions_log_prob_batch = actions_log_prob_batch.view(-1, 1)
+
+            # Surrogate loss
+            ratio = torch.exp(actions_log_prob_batch - prev_log_probs)
+            surrogate_1 = ratio * advantage_estimates
+            surrogate_2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * advantage_estimates
+            surrogate_loss = -torch.min(surrogate_1, surrogate_2).mean()
+
+            # Value loss
+            if self.use_clipped_value_loss:
+                value_clipped = value_targets + (value_batch - value_targets).clamp(-self.clip_param, self.clip_param)
+                value_loss_1 = (value_batch - discounted_returns).pow(2)
+                value_loss_2 = (value_clipped - discounted_returns).pow(2)
+                value_loss = torch.max(value_loss_1, value_loss_2).mean()
+            else:
+                value_loss = (value_batch - discounted_returns).pow(2).mean()
+
+            # Entropy loss
+            entropy_batch = self.actor_critic.entropy
+            entropy_loss = entropy_batch.mean()
+
+            # Total loss
+            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_loss
+
+            # Optimization step
+            self.optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+            self.optimizer.step()
+
+            mean_value_loss += value_loss.item()
+            mean_surrogate_loss += surrogate_loss.item()
+            mean_entropy += entropy_loss.item()
             # TODO ----- END -----
 
         num_updates = self.num_learning_epochs * self.num_mini_batches

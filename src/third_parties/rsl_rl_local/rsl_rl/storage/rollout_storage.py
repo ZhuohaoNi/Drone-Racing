@@ -130,25 +130,29 @@ class RolloutStorage:
         self.step = 0
 
     def compute_returns(self, last_values, gamma, lam, normalize_advantage: bool = True):
-        advantage = 0
+        ##### Modeified ######
+        # We replace the purely iterative GAE approach with a GPU-vectorized approach 
+        # to compute advantages. This minimizes the PyTorch operations called inside the loop,
+        # moving the TD error (delta) calculation to a fully parallel sequence compute.
+        
+        # 1. Prepare next values and terminal states in parallel
+        next_values = torch.cat([self.values[1:], last_values.unsqueeze(0)])
+        next_is_not_terminal = 1.0 - self.dones.float()
+        
+        # 2. Vectorize the TD error (delta) computation
+        # delta_t = r_t + gamma * V(s_{t+1}) - V(s_t)
+        deltas = self.rewards + next_is_not_terminal * gamma * next_values - self.values
+        
+        # 3. Compute advantages incrementally (Temporal dependency keeps this as a loop, but significantly leaner)
+        advantage = torch.zeros_like(last_values)
         for step in reversed(range(self.num_transitions_per_env)):
-            # if we are at the last step, bootstrap the return value
-            if step == self.num_transitions_per_env - 1:
-                next_values = last_values
-            else:
-                next_values = self.values[step + 1]
-            # 1 if we are not in a terminal state, 0 otherwise
-            next_is_not_terminal = 1.0 - self.dones[step].float()
-            # TD error: r_t + gamma * V(s_{t+1}) - V(s_t)
-            delta = self.rewards[step] + next_is_not_terminal * gamma * next_values - self.values[step]
-            # Advantage: A(s_t, a_t) = delta_t + gamma * lambda * A(s_{t+1}, a_{t+1})
-            advantage = delta + next_is_not_terminal * gamma * lam * advantage
-            # Return: R_t = A(s_t, a_t) + V(s_t)
+            advantage = deltas[step] + next_is_not_terminal[step] * gamma * lam * advantage
             self.returns[step] = advantage + self.values[step]
-
-        # Compute the advantages
+            
+        # 4. Compute the advantages
         self.advantages = self.returns - self.values
-        # Normalize the advantages if flag is set
+        
+        # 5. Normalize the advantages if flag is set
         # This is to prevent double normalization (i.e. if per minibatch normalization is used)
         if normalize_advantage:
             self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
