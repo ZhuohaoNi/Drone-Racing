@@ -156,11 +156,31 @@ def main():
             # Extract tensor from TensorDict for policy
             if hasattr(obs, "get"):  # Check if it's a TensorDict
                 obs = obs["policy"]  # Extract the policy observation
+
+            # --- Live race stats ---
+            unwrapped = env.unwrapped
+            elapsed_time = unwrapped.episode_length_buf[0].item() * unwrapped.cfg.sim.dt * unwrapped.cfg.decimation
+            gates = unwrapped._n_gates_passed[0].item()
+            num_gates = unwrapped._waypoints.shape[0]
+            laps = gates // num_gates
+            if timestep % 50 == 0:
+                print(f"[t={elapsed_time:6.2f}s] Gates: {gates:3d} | Laps: {laps}/{unwrapped.cfg.max_n_laps}")
+            # Print final summary when episode ends
+            if dones[0]:
+                print(f"\n{'='*50}")
+                print(f"  RACE RESULT")
+                print(f"  Time:  {elapsed_time:.2f}s")
+                print(f"  Gates: {gates}")
+                print(f"  Laps:  {laps}/{unwrapped.cfg.max_n_laps}")
+                print(f"{'='*50}\n")
+
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
                 break
+        else:
+            timestep += 1
 
     # close the simulator
     env.close()
