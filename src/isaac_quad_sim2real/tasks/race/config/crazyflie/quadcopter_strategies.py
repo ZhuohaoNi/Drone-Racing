@@ -42,46 +42,57 @@ class DefaultQuadcopterStrategy:
                 for key in keys
             }
 
-        # Initialize fixed parameters once (no domain randomization)
-        # These parameters remain constant throughout the simulation
-        # Aerodynamic drag coefficients
-        self.env._K_aero[:, :2] = self.env._k_aero_xy_value
-        self.env._K_aero[:, 2] = self.env._k_aero_z_value
+        # Domain randomization: randomize physical parameters for robustness
+        # Ranges match the TA evaluation ranges from project description
+        self._randomize_dynamics(torch.arange(self.num_envs, device=self.device))
 
-        # PID controller gains for angular rate control
-        # Roll and pitch use the same gains
-        self.env._kp_omega[:, :2] = self.env._kp_omega_rp_value
-        self.env._ki_omega[:, :2] = self.env._ki_omega_rp_value
-        self.env._kd_omega[:, :2] = self.env._kd_omega_rp_value
+    def _randomize_dynamics(self, env_ids: torch.Tensor):
+        """Randomize physical parameters for domain randomization.
+        Ranges match the TA evaluation ranges from the project description."""
+        n = len(env_ids)
+        cfg = self.cfg
 
-        # Yaw has different gains
-        self.env._kp_omega[:, 2] = self.env._kp_omega_y_value
-        self.env._ki_omega[:, 2] = self.env._ki_omega_y_value
-        self.env._kd_omega[:, 2] = self.env._kd_omega_y_value
+        # Thrust-to-weight ratio: ±5%
+        twr_min = cfg.thrust_to_weight * 0.95
+        twr_max = cfg.thrust_to_weight * 1.05
+        self.env._thrust_to_weight[env_ids] = torch.empty(n, device=self.device).uniform_(twr_min, twr_max)
 
-        # Motor time constants (same for all 4 motors)
-        self.env._tau_m[:] = self.env._tau_m_value
+        # Aerodynamic drag: 0.5x - 2.0x
+        k_aero_xy_min = cfg.k_aero_xy * 0.5
+        k_aero_xy_max = cfg.k_aero_xy * 2.0
+        k_aero_z_min = cfg.k_aero_z * 0.5
+        k_aero_z_max = cfg.k_aero_z * 2.0
+        self.env._K_aero[env_ids, 0] = torch.empty(n, device=self.device).uniform_(k_aero_xy_min, k_aero_xy_max)
+        self.env._K_aero[env_ids, 1] = torch.empty(n, device=self.device).uniform_(k_aero_xy_min, k_aero_xy_max)
+        self.env._K_aero[env_ids, 2] = torch.empty(n, device=self.device).uniform_(k_aero_z_min, k_aero_z_max)
 
-        # Thrust to weight ratio
-        self.env._thrust_to_weight[:] = self.env._twr_value
+        # PID gains - Roll/Pitch: kp/ki ±15%, kd ±30%
+        self.env._kp_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_rp * 0.85, cfg.kp_omega_rp * 1.15)
+        self.env._kp_omega[env_ids, 1] = self.env._kp_omega[env_ids, 0]  # same for roll and pitch
+        self.env._ki_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_rp * 0.85, cfg.ki_omega_rp * 1.15)
+        self.env._ki_omega[env_ids, 1] = self.env._ki_omega[env_ids, 0]
+        self.env._kd_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_rp * 0.7, cfg.kd_omega_rp * 1.3)
+        self.env._kd_omega[env_ids, 1] = self.env._kd_omega[env_ids, 0]
+
+        # PID gains - Yaw: kp/ki ±15%, kd ±30%
+        self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_y * 0.85, cfg.kp_omega_y * 1.15)
+        self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_y * 0.85, cfg.ki_omega_y * 1.15)
+        self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_y * 0.7, cfg.kd_omega_y * 1.3)
+
+        # Motor time constants (fixed)
+        self.env._tau_m[env_ids] = cfg.tau_m
 
     def get_rewards(self) -> torch.Tensor:
-        """Compute rewards: progress toward gate, gate-pass bonus, crash penalty."""
+        """Compute rewards: progress, velocity toward gate, gate-pass bonus, crash, orientation, smoothness."""
 
         # TODO ----- START ----- Define the tensors required for your custom reward structure
         num_gates = self.env._waypoints.shape[0]
         gate_side = self.cfg.gate_model.gate_side
 
         # --- Gate passing detection ---
-        # x-component in gate frame: positive = in front, negative = behind
-        # Correct passage: x goes from positive to negative (drone flies through gate)
         curr_x = self.env._pose_drone_wrt_gate[:, 0]
         prev_x = self.env._prev_x_drone_wrt_gate
-
-        # Check direction: crossed the gate plane in the correct direction
         crossed_plane = (prev_x > 0) & (curr_x <= 0)
-
-        # Check bounds: drone passed through the gate opening (not around it)
         gate_y = self.env._pose_drone_wrt_gate[:, 1]
         gate_z = self.env._pose_drone_wrt_gate[:, 2]
         within_bounds = (gate_y.abs() < gate_side / 2.0) & (gate_z.abs() < gate_side / 2.0)
@@ -89,27 +100,35 @@ class DefaultQuadcopterStrategy:
         gate_passed = crossed_plane & within_bounds
         ids_gate_passed = torch.where(gate_passed)[0]
 
-        # Advance waypoint index and increment gate counter
         self.env._idx_wp[ids_gate_passed] = (self.env._idx_wp[ids_gate_passed] + 1) % num_gates
         self.env._n_gates_passed[ids_gate_passed] += 1
-
-        # Update desired position to the new target gate
         self.env._desired_pos_w[ids_gate_passed] = self.env._waypoints[self.env._idx_wp[ids_gate_passed], :3]
-
-        # Update previous x for next timestep
         self.env._prev_x_drone_wrt_gate = curr_x.clone()
-
-        # Gate pass bonus (1.0 for passed, 0.0 otherwise)
         gate_pass = gate_passed.float()
 
         # --- Progress reward ---
-        # Distance to current target gate
         current_distance = torch.linalg.norm(
             self.env._desired_pos_w - self.env._robot.data.root_link_pos_w, dim=1
         )
-        # Progress = distance reduced since last step (positive = getting closer)
         progress = (self.env._last_distance_to_goal - current_distance).clamp(-1.0, 1.0)
         self.env._last_distance_to_goal = current_distance.clone()
+
+        # --- Velocity toward gate reward ---
+        direction_to_gate = self.env._desired_pos_w - self.env._robot.data.root_link_pos_w
+        direction_to_gate = direction_to_gate / (torch.linalg.norm(direction_to_gate, dim=1, keepdim=True) + 1e-8)
+        drone_vel_w = self.env._robot.data.root_com_lin_vel_w
+        vel_toward_gate = torch.sum(drone_vel_w * direction_to_gate, dim=1)  # dot product
+        vel_toward_gate = vel_toward_gate.clamp(-2.0, 5.0)  # cap to avoid outliers
+
+        # --- Orientation penalty ---
+        # Penalize excessive tilt (large roll/pitch)
+        roll, pitch, _ = euler_xyz_from_quat(self.env._robot.data.root_quat_w)
+        tilt_penalty = (roll.abs() + pitch.abs())  # sum of absolute roll + pitch
+        tilt_penalty = torch.where(tilt_penalty > 0.5, tilt_penalty, torch.zeros_like(tilt_penalty))  # only penalize > ~30°
+
+        # --- Smoothness penalty ---
+        action_diff = self.env._actions - self.env._previous_actions
+        smoothness_penalty = torch.linalg.norm(action_diff, dim=1)
 
         # --- Crash detection ---
         contact_forces = self.env._contact_sensor.data.net_forces_w
@@ -123,6 +142,9 @@ class DefaultQuadcopterStrategy:
             rewards = {
                 "progress_goal": progress * self.env.rew['progress_goal_reward_scale'],
                 "gate_pass": gate_pass * self.env.rew['gate_pass_reward_scale'],
+                "vel_toward_gate": vel_toward_gate * self.env.rew['vel_toward_gate_reward_scale'],
+                "orientation": tilt_penalty * self.env.rew['orientation_reward_scale'],
+                "smoothness": smoothness_penalty * self.env.rew['smoothness_reward_scale'],
                 "crash": crashed * self.env.rew['crash_reward_scale'],
             }
             reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
@@ -139,7 +161,7 @@ class DefaultQuadcopterStrategy:
         return reward
 
     def get_observations(self) -> Dict[str, torch.Tensor]:
-        """23-dim ego-centric observation: body velocities, quaternion, gate-relative positions, gate normal, prev actions."""
+        """25-dim ego-centric observation: body velocities, quaternion, gate-relative positions, gate normal, yaw error, prev actions."""
 
         # TODO ----- START ----- Define tensors for your observation space. Be careful with frame transformations
         num_gates = self.env._waypoints.shape[0]
@@ -169,8 +191,15 @@ class DefaultQuadcopterStrategy:
             next_gate_pos_w
         )
 
-        # Current gate normal vector (3 dims) - indicates pass-through direction
+        # Current gate normal vector (3 dims)
         gate_normal = self.env._normal_vectors[current_gate_idx]         # (num_envs, 3)
+
+        # Sin/cos yaw error relative to gate direction (2 dims)
+        _, _, drone_yaw = euler_xyz_from_quat(drone_quat_w)
+        gate_yaw = self.env._waypoints[current_gate_idx, -1]            # gate yaw angle
+        yaw_error = wrap_to_pi(gate_yaw - drone_yaw)
+        sin_yaw_error = torch.sin(yaw_error).unsqueeze(1)               # (num_envs, 1)
+        cos_yaw_error = torch.cos(yaw_error).unsqueeze(1)               # (num_envs, 1)
 
         # Previous actions (4 dims)
         prev_actions = self.env._previous_actions                       # (num_envs, 4)
@@ -185,6 +214,8 @@ class DefaultQuadcopterStrategy:
                 gate_pos_b,         # current gate in body frame    (3)
                 next_gate_pos_b,    # next gate in body frame       (3)
                 gate_normal,        # current gate normal direction (3)
+                sin_yaw_error,      # sin of yaw error to gate      (1)
+                cos_yaw_error,      # cos of yaw error to gate      (1)
                 prev_actions,       # previous actions              (4)
             ],
             # TODO ----- END -----
@@ -251,6 +282,9 @@ class DefaultQuadcopterStrategy:
 
         # TODO ----- START ----- Define the initial state during training after resetting an environment.
         num_gates = self.env._waypoints.shape[0]
+
+        # Re-randomize dynamics for resetting environments (domain randomization)
+        self._randomize_dynamics(env_ids)
 
         # Random starting gate for each resetting environment
         waypoint_indices = torch.randint(0, num_gates, (n_reset,), device=self.device, dtype=self.env._idx_wp.dtype)

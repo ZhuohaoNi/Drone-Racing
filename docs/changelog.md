@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [V2] - 2026-03-27
+
+### Added
+- **Velocity toward gate reward**: Dot product of drone velocity with direction-to-gate vector, clamped to [-2, 5], scale 5.0.
+- **Orientation penalty**: Penalizes excessive roll+pitch when > 0.5 rad (~30°), scale -2.0.
+- **Smoothness penalty**: Penalizes action jitter via `||a_t - a_{t-1}||`, scale -0.5.
+- **Sin/cos yaw error** observations (2 dims): Continuous heading alignment signal relative to gate direction. Total observation dims: 23 → 25.
+- **Domain randomization** via `_randomize_dynamics()`:
+  - TWR: ±5%, Aero drag: 0.5x-2.0x, PID kp/ki: ±15%, PID kd: ±30%
+  - Ranges match TA evaluation ranges from project description
+  - Re-randomized on every episode reset for maximum diversity
+- **Empirical observation normalization** enabled in `rsl_rl_ppo_cfg.py`.
+
 ## [V1] - 2026-03-27
 
 ### Added
