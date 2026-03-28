@@ -34,7 +34,7 @@ python scripts/rsl_rl/play_race.py \
 Run logs are stored in `logs/rsl_rl/quadcopter_direct/<timestamp>_<run_name>/`.
 
 ### Environment
-Conda environment: `isaac_quad_sim2real` (activated via `.envrc`)
+Conda environment: `lab` (activated via `.envrc`)
 
 ## Architecture
 

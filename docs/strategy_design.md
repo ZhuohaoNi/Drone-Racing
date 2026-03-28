@@ -98,7 +98,7 @@ return_t = A_t + V(s_t)                                           # critic targe
 
 ### 1.2 Current Implementation
 
-Based on the changelog and code inspection, the teammate has completed both deliverables:
+Based on the changelog and code inspection, both PPO deliverables are complete and stable since V1.
 
 #### PPO `update()` (`ppo.py:123-215`) — Complete
 
@@ -175,6 +175,7 @@ Advantage normalization (`(adv - mean) / (std + 1e-8)`) applied when `normalize_
 | `max_grad_norm` | 1.0 | Gradient clipping |
 | `init_noise_std` | 1.0 | Initial action noise |
 | `min_std` | 0.0 | Minimum action std |
+| `empirical_normalization` | True | Running obs normalization |
 
 ### 1.3 How to Evaluate PPO (WandB Metrics)
 
@@ -211,6 +212,8 @@ Per the project description, after implementing PPO with the default (hovering) 
 Currently `entropy_coef = 0.0` (`rsl_rl_ppo_cfg.py:30`). No exploration incentive — the policy can collapse to deterministic behavior before discovering the full racing trajectory.
 
 **Recommended:** `entropy_coef = 0.005`. Small enough to not destabilize, sufficient to maintain exploration through the powerloop and chicane.
+
+**Caution:** V2 achieved the best results (3 laps, ~17s) without entropy bonus. Only enable if training shows premature convergence (entropy collapse on WandB). May not be needed.
 
 #### 1.4.2 Medium: Increase Rollout Length
 
@@ -272,15 +275,19 @@ Additionally, the project encourages tuning hyperparameters in `rsl_rl_ppo_cfg.p
 
 - **Primary metric:** 3-lap completion time on the powerloop track
 - **Sim2real gap:** TAs alter dynamics during evaluation — TWR (+/-5%), aero drag (0.5-2x), PID gains (roll/pitch kp/ki +/-15%, kd +/-30%; yaw same ranges)
+- 3 parameters randomly sampled once from those ranges, held constant for all students
+- Initial pose: x_local in (-3.0, -0.5), y_local in (-1.0, 1.0) — hard-coded by TAs within those bounds
 - Domain randomization and adaptation are explicitly recommended
 
-### 2.2 Current Implementation
+### 2.2 Current Implementation (V9 = V2 Revert)
 
-Based on the changelog (V1 + V2) and code inspection, the teammate has implemented all three methods plus domain randomization:
+The current code matches V2 exactly. V3-V8 experimented with modifications to the reward structure, observation normalization, and orientation penalty — all degraded performance relative to V2 and were reverted. See Section 2.5 for lessons learned.
+
+**Best recorded performance (V2):** 3 laps completed in ~17s with `empirical_normalization = True`.
 
 #### 2.2.1 Reward Structure (`get_rewards()`, lines 85-161)
 
-Six reward components plus a death cost (V2 added velocity, orientation, and smoothness):
+Six reward components plus a death cost:
 
 **Gate passing detection (lines 92-107):**
 Tracks the drone's x-coordinate in the gate-local frame. A gate is passed when x transitions from positive to negative (crossed forward through the gate plane) AND the drone's y/z coordinates are within `gate_side / 2` (within the gate opening). On passage:
@@ -295,24 +302,24 @@ progress = (last_distance - current_distance).clamp(-1.0, 1.0)
 ```
 Dense signal rewarding distance reduction toward the current target gate.
 
-**Velocity toward gate reward (lines 116-121, added in V2):**
+**Velocity toward gate reward (lines 116-121):**
 ```python
 direction_to_gate = (desired_pos_w - root_link_pos_w) / (||...|| + 1e-8)
 vel_toward_gate = dot(drone_vel_w, direction_to_gate).clamp(-2.0, 5.0)
 ```
-Dot product of world-frame velocity with unit direction to gate. Clamped to [-2, 5] to cap outliers while still penalizing moving away from the gate. This provides an explicit speed incentive.
+Dot product of world-frame velocity with unit direction to gate. Clamped to [-2, 5] to cap outliers while still penalizing moving away from the gate.
 
-**Orientation penalty (lines 123-127, added in V2):**
+**Orientation penalty (lines 123-127):**
 ```python
 tilt_penalty = (|roll| + |pitch|)   # only when > 0.5 rad (~30 deg)
 ```
-Penalizes excessive tilt angles. Uses a threshold at 0.5 rad so normal flight maneuvers are not penalized, but extreme orientations (likely pre-crash) are discouraged.
+Penalizes excessive tilt angles. Threshold at 0.5 rad so normal flight is unpenalized but extreme orientations (pre-crash) are discouraged.
 
-**Smoothness penalty (lines 129-131, added in V2):**
+**Smoothness penalty (lines 129-131):**
 ```python
 smoothness_penalty = ||actions - previous_actions||
 ```
-Penalizes action jitter (large frame-to-frame changes). Encourages smooth control inputs.
+Penalizes action jitter (large frame-to-frame changes).
 
 **Crash detection (lines 133-137):**
 ```python
@@ -323,21 +330,21 @@ _crashed += crashed * mask                  # accumulates; dies at _crashed > 10
 
 **Reward scales (from `train_race.py`):**
 
-| Component | Scale | Type | Since |
-|---|---|---|---|
-| `progress_goal` | 50.0 | Dense, per-timestep | V1 |
-| `gate_pass` | 200.0 | Sparse, on gate passage | V1 |
-| `vel_toward_gate` | 5.0 | Dense, per-timestep | V2 |
-| `orientation` | -2.0 | Penalty when tilt > 0.5 rad | V2 |
-| `smoothness` | -0.5 | Penalty per-timestep | V2 |
-| `crash` | -1.0 | Penalty per contact timestep | V1 |
-| `death_cost` | -10.0 | One-time on termination | V1 |
+| Component | Scale | Type |
+|---|---|---|
+| `progress_goal` | 50.0 | Dense, per-timestep |
+| `gate_pass` | 200.0 | Sparse, on gate passage |
+| `vel_toward_gate` | 5.0 | Dense, per-timestep |
+| `orientation` | -2.0 | Penalty when tilt > 0.5 rad |
+| `smoothness` | -0.5 | Penalty per-timestep |
+| `crash` | -1.0 | Penalty per contact timestep |
+| `death_cost` | -10.0 | One-time on termination |
 
 On termination, the entire timestep reward is replaced with `death_cost`.
 
 #### 2.2.2 Observation Space (`get_observations()`, lines 163-226)
 
-25-dimensional ego-centric vector (V2 added sin/cos yaw error, +2 dims from V1's 23):
+25-dimensional ego-centric vector:
 
 | Observation | Dims | Frame | Source |
 |---|---|---|---|
@@ -347,50 +354,58 @@ On termination, the entire timestep reward is replaced with `death_cost`.
 | Current gate position | 3 | Body | `subtract_frame_transforms(drone_pos, drone_quat, gate_pos)` |
 | Next gate position | 3 | Body | Same transform for `(idx_wp + 1) % num_gates` |
 | Current gate normal | 3 | World | `_normal_vectors[current_gate_idx]` |
-| Sin/cos yaw error | 2 | N/A | `sin/cos(wrap_to_pi(gate_yaw - drone_yaw))` (V2) |
+| Sin/cos yaw error | 2 | N/A | `sin/cos(wrap_to_pi(gate_yaw - drone_yaw))` |
 | Previous actions | 4 | N/A | `_previous_actions` |
 
-The sin/cos yaw error (V2) provides a continuous, wrap-around-safe heading alignment signal. It tells the policy how far off its yaw is from the gate's pass-through direction without the discontinuity that raw yaw angle would have at +/-pi.
+The sin/cos yaw error provides a continuous, wrap-around-safe heading alignment signal without the discontinuity at +/-pi.
 
-**Remaining issue:** Gate normal is still in world frame while gate positions are in body frame.
+**Known issue:** Gate normal is in world frame while gate positions are in body frame — a frame inconsistency.
 
 #### 2.2.3 Reset Strategy (`reset_idx()`, lines 228-387)
 
 **Training mode:**
 1. Random gate: uniform over `[0, num_gates)`
-2. **Domain randomization** on every reset via `_randomize_dynamics(env_ids)` (V2)
+2. **Domain randomization** on every reset via `_randomize_dynamics(env_ids)`
 3. Position: 1.5-3.0m behind gate (gate-local -x), +/-0.5m lateral, +/-0.3m vertical (clamped above 0.15m)
 4. Orientation: facing target gate with +/-0.15 rad (~8.6 deg) yaw noise
 5. Velocity: zero
 
-**Play mode:** Fixed spawn near gate 0 at z=0.05m with random lateral/longitudinal offsets.
+**Play mode:** Fixed spawn near gate 0 at z=0.05m with random lateral/longitudinal offsets within (-3.0, -0.5) x (-1.0, 1.0).
 
-#### 2.2.4 Domain Randomization (`_randomize_dynamics()`, lines 49-83, added in V2)
+#### 2.2.4 Domain Randomization (`_randomize_dynamics()`, lines 49-83)
 
-Physics parameters are now **randomized per-environment on every reset**, matching the TA evaluation ranges:
+Physics parameters randomized per-environment on every reset, matching TA evaluation ranges:
 
-```python
-# TWR: ±5%
-_thrust_to_weight[env_ids] = uniform(twr * 0.95, twr * 1.05)
+| Parameter | Range | Notes |
+|---|---|---|
+| TWR | ±5% | Thrust-to-weight ratio |
+| Aero drag x/y | 0.5x - 2.0x | Sampled independently |
+| Aero drag z | 0.5x - 2.0x | Independent from x/y |
+| PID kp/ki (roll/pitch) | ±15% | Roll = pitch (physical symmetry) |
+| PID kd (roll/pitch) | ±30% | Roll = pitch |
+| PID kp/ki (yaw) | ±15% | Independent |
+| PID kd (yaw) | ±30% | Independent |
+| Motor time constant | Fixed | Not randomized |
 
-# Aero drag: 0.5x - 2.0x (x/y independent, z independent)
-_K_aero[env_ids, 0] = uniform(k_xy * 0.5, k_xy * 2.0)
-_K_aero[env_ids, 1] = uniform(k_xy * 0.5, k_xy * 2.0)
-_K_aero[env_ids, 2] = uniform(k_z * 0.5, k_z * 2.0)
+#### 2.2.5 PPO Configuration
 
-# PID gains — roll/pitch: kp/ki ±15%, kd ±30% (roll = pitch)
-# PID gains — yaw: kp/ki ±15%, kd ±30%
+- `empirical_normalization = True` — Running normalization of observations using mean/std statistics. Essential for V2-level performance; V7's experiment confirmed that disabling it collapses all reward metrics. V8 showed that manual normalization (dividing by fixed constants) cannot replicate the benefit of running statistics.
 
-# Motor time constant: fixed (not randomized)
-```
-
-**Note:** Roll and pitch PID gains are sampled once and copied (roll = pitch), which matches the physical symmetry of the drone. Aero drag x and y are sampled independently.
-
-#### 2.2.5 PPO Configuration Changes (V2)
-
-- `empirical_normalization = True` (was `False`) — Enables running normalization of observations, which helps when observation components have different scales (e.g., velocities vs. quaternions vs. gate positions). This is important now that the observation space has grown to 25 dims with heterogeneous components.
+**Important caveat:** `rsl_rl_ppo_cfg.py` is NOT submitted to TAs. The normalizer state must be saved in the checkpoint for inference to work correctly. Need to verify the TA's runner loads normalizer weights from the `.pt` file automatically.
 
 ### 2.3 How to Evaluate the Strategy (WandB Metrics)
+
+#### V2 baseline metrics (best known)
+
+| Metric | V2 Value | Notes |
+|---|---|---|
+| `vel_toward_gate` | ~800 | Strong speed signal |
+| `progress_goal` | ~100-125 | Consistent approach |
+| `gate_pass` | ~200 (saturated) | Completing all gates |
+| `orientation` | ~-60 | Large but drone still raced well |
+| `smoothness` | ~0 | Naturally smooth actions |
+| `crash` | -0.2 to -0.8 | Minimal contact |
+| 3-lap time | ~17s | Primary evaluation metric |
 
 #### Reward curves
 
@@ -398,9 +413,9 @@ _K_aero[env_ids, 2] = uniform(k_z * 0.5, k_z * 2.0)
 |---|---|---|
 | `Episode_Reward/progress_goal` | Is the drone approaching gates? | Positive, growing |
 | `Episode_Reward/gate_pass` | Gates passed per episode | Increasing in discrete steps |
-| `Episode_Reward/vel_toward_gate` | Speed toward the current gate | Positive and growing — drone actively flying toward gates, not drifting |
-| `Episode_Reward/orientation` | Tilt penalty magnitude | Small/near-zero — drone staying upright during maneuvers |
-| `Episode_Reward/smoothness` | Action jitter penalty | Decreasing — drone learning smoother control inputs |
+| `Episode_Reward/vel_toward_gate` | Speed toward the current gate | Positive and growing |
+| `Episode_Reward/orientation` | Tilt penalty magnitude | Small/near-zero |
+| `Episode_Reward/smoothness` | Action jitter penalty | Decreasing |
 | `Episode_Reward/crash` | Collision frequency | Decreasing toward zero |
 | Total episode reward | Overall learning progress | Steady upward trend |
 
@@ -416,12 +431,12 @@ _K_aero[env_ids, 2] = uniform(k_z * 0.5, k_z * 2.0)
 | WandB Pattern | Likely Cause | Fix |
 |---|---|---|
 | Reward up but `gate_pass` flat | Reward hacking — oscillating near gate without passing | Increase `gate_pass_reward_scale`, decrease `progress_goal_reward_scale` |
-| High death rate throughout | Drone too aggressive or unstable | Increase crash/death penalty scales. Orientation penalty already present — consider increasing `orientation_reward_scale` magnitude |
+| High death rate throughout | Drone too aggressive or unstable | Increase crash/death penalty scales |
 | `gate_pass` rises then drops | Catastrophic forgetting | Reduce LR, reduce `clip_param` |
-| Plateau with healthy entropy | Strategy ceiling — PPO is fine but reward/obs limit what's learnable | Add look-ahead gate, fix gate normal frame, try gravity vector obs |
-| `vel_toward_gate` positive but `gate_pass` flat | Drone flying toward gate but not through it | Check gate normal alignment — may need body-frame normal or look-ahead gate |
+| Plateau with healthy entropy | Strategy ceiling — PPO is fine but reward/obs limit what's learnable | Add look-ahead gate, fix gate normal frame |
+| `vel_toward_gate` positive but `gate_pass` flat | Drone flying toward gate but not through it | Check gate normal alignment — may need body-frame normal |
 | `orientation` large and persistent | Drone frequently over-tilting | Increase `orientation_reward_scale` magnitude or lower tilt threshold |
-| `smoothness` stays high | Jerky control not converging | Increase `smoothness_reward_scale` magnitude, or check if reward conflict with speed reward |
+| `smoothness` stays high | Jerky control not converging | Increase `smoothness_reward_scale` magnitude |
 
 #### Evaluation-time testing
 
@@ -430,11 +445,11 @@ After training, run `play_race.py` and check:
 - What is the total lap time?
 - Does it survive under domain randomization (altered TWR, drag, PID gains)?
 
-Domain randomization is now implemented in training (V2), so training-time and eval-time dynamics should be aligned.
+Recommended self-evaluation: test with 5 random combinations of 3 altered parameters within TA ranges.
 
 ### 2.4 Strategy Improvements
 
-Items marked **DONE** are already implemented in V2. Remaining items are prioritized for the next iteration.
+Items marked **DONE** are already implemented. Items marked **TRIED & REVERTED** were tested in V3-V8 and degraded performance. Remaining items are prioritized for the next iteration.
 
 #### 2.4.1 ~~Critical: Domain Randomization~~ — DONE (V2)
 
@@ -442,20 +457,30 @@ Implemented in `_randomize_dynamics()` (lines 49-83). TWR ±5%, aero drag 0.5-2x
 
 #### 2.4.2 ~~High: Speed Reward~~ — DONE (V2)
 
-Implemented as `vel_toward_gate` reward (lines 116-121). Dot product of velocity with direction to gate, clamped [-2, 5], scale=5.0. Provides explicit speed incentive.
+Implemented as `vel_toward_gate` reward (lines 116-121). Dot product of velocity with direction to gate, clamped [-2, 5], scale=5.0.
 
-**Potential tuning:** Current scale (5.0) is conservative. If `Episode_Termination/time_out` remains high, increase to 10.0-15.0.
+**Warning from V4-V6:** Do NOT increase this scale. At scale 5.0 combined with heading reward (V4), the velocity contribution dominated at ~750, drowning out gate_pass (200). The drone became speed-obsessed and crashed at tight turns (gate 3->4). Even at scale 2.0 (V5) it still crashed frequently. Scale 5.0 alone (without heading reward) is the validated sweet spot.
 
-#### 2.4.3 High: Gate Normal in Body Frame
+#### 2.4.3 ~~Medium: Orientation Penalty~~ — DONE (V2)
 
-**Still needed.** The gate normal is in world frame (line ~195) while gate positions are in body frame — a frame inconsistency. The sin/cos yaw error (V2) partially addresses heading alignment, but the full 3D normal in body frame would help with the powerloop's vertical gates.
+Implemented as tilt penalty (lines 123-127). Penalizes |roll| + |pitch| when > 0.5 rad, scale=-2.0.
+
+**Warning from V3:** Reducing to -0.5 with threshold 1.0 rad caused the drone to flip at the gate 3->4 transition. The V2 values (-2.0 scale, 0.5 rad threshold) are critical for stability through tight turns. Do not weaken.
+
+#### 2.4.4 ~~Low: Action Smoothness Penalty~~ — DONE (V2)
+
+Implemented (lines 129-131). Penalizes ||actions - previous_actions||, scale=-0.5. V2 showed the policy naturally learns smooth actions (metric ~0), so the penalty is lightweight.
+
+#### 2.4.5 High: Gate Normal in Body Frame
+
+**Still needed.** The gate normal is in world frame (line ~195) while gate positions are in body frame — a frame inconsistency. The sin/cos yaw error partially addresses heading alignment, but the full 3D normal in body frame would help with the powerloop's vertical gates.
 
 ```python
 rot_matrix = matrix_from_quat(drone_quat_w)
 gate_normal_b = torch.bmm(rot_matrix.transpose(1, 2), gate_normal_w.unsqueeze(-1)).squeeze(-1)
 ```
 
-#### 2.4.4 High: Gravity Vector in Body Frame
+#### 2.4.6 High: Gravity Vector in Body Frame
 
 **Still needed.** Replace or supplement the world-frame quaternion (4 dims) with gravity in body frame (3 dims). Directly tells the policy "which way is down" without requiring quaternion decoding:
 
@@ -467,7 +492,7 @@ gravity_b = torch.bmm(rot_matrix.transpose(1, 2), gravity_world.unsqueeze(-1)).s
 
 This saves 1 obs dimension (4 -> 3) while providing a more directly useful signal.
 
-#### 2.4.5 Medium: Non-Zero Initial Velocity
+#### 2.4.7 Medium: Non-Zero Initial Velocity
 
 **Still needed.** The drone always spawns stationary, but in a race it's always in motion. Training from static starts means the policy never practices flying through gates at speed.
 
@@ -477,13 +502,7 @@ default_root_state[:, 7] = forward_speed * torch.cos(initial_yaw)
 default_root_state[:, 8] = forward_speed * torch.sin(initial_yaw)
 ```
 
-#### 2.4.6 ~~Medium: Orientation Penalty~~ — DONE (V2)
-
-Implemented as tilt penalty (lines 123-127). Penalizes |roll| + |pitch| when > 0.5 rad, scale=-2.0.
-
-**Potential tuning:** If death rate is still high, increase magnitude to -5.0 or lower the threshold from 0.5 to 0.3 rad.
-
-#### 2.4.7 Medium: Additional Look-Ahead Gate
+#### 2.4.8 Medium: Additional Look-Ahead Gate
 
 **Still needed.** The powerloop (gates 2-3) and chicane (gates 5-6-0) benefit from seeing further ahead. Add a third look-ahead gate (+3 dims):
 
@@ -494,7 +513,7 @@ third_gate_pos_b, _ = subtract_frame_transforms(drone_pos, drone_quat, waypoints
 
 This is especially important if `gate_pass` plateaus at 3-5 gates.
 
-#### 2.4.8 Low: Weighted Gate Sampling
+#### 2.4.9 Low: Weighted Gate Sampling
 
 **Still needed.** Over-sample harder gates during reset:
 
@@ -504,27 +523,50 @@ weights[[2, 3, 5, 6, 0]] = 2.0  # powerloop and chicane gates
 waypoint_indices = torch.multinomial(weights.expand(n_reset, -1), 1).squeeze(1)
 ```
 
-#### 2.4.9 ~~Low: Action Smoothness Penalty~~ — DONE (V2)
+#### 2.4.10 TRIED & REVERTED: Heading Alignment Reward (V4-V6)
 
-Implemented (lines 129-131). Penalizes ||actions - previous_actions||, scale=-0.5.
+Tested `cos(yaw_error) * 2.0` as a reward in V4. Combined with vel_toward_gate, it over-constrained the policy and caused constant crashing (passes 1-3 gates then dies). Reduced to scale 1.0 (V5) and 0.5 (V6) — still degraded performance. The sin/cos yaw error in the observation space is sufficient directional guidance; an explicit heading reward is harmful.
 
-**Potential tuning:** If `smoothness` metric stays high and conflicts with speed reward, reduce magnitude to -0.2.
+#### 2.4.11 TRIED & REVERTED: Manual Observation Normalization (V8)
 
-#### Strategy Improvement Priority Summary (Updated for V2)
+Tried dividing velocities by 3.0, angular velocities by 5.0, gate positions by 5.0 in `get_observations()` to replicate `empirical_normalization` within the submitted file. Performance was worse (vel: 800->200, progress: 100->30, gate_pass: 200->50 at V7 level). Running mean/std normalization cannot be replicated by fixed constants because the distribution shifts during training.
+
+#### 2.4.12 TRIED & REVERTED: Higher Death Cost (V6)
+
+Increased death_cost from -10 to -50. Made the drone overly cautious — 3 laps in ~26s vs V2's ~17s. The -10 value provides sufficient crash avoidance without sacrificing speed.
+
+#### Strategy Improvement Priority Summary
 
 | Priority | Change | Status | Impact |
 |---|---|---|---|
-| ~~Critical~~ | ~~Domain randomization~~ | **DONE (V2)** | ~~Policy survives eval dynamics~~ |
-| ~~High~~ | ~~Speed reward (vel_toward_gate)~~ | **DONE (V2)** | ~~Faster lap times~~ |
-| High | Gate normal in body frame | **TODO** | Faster learning, consistent frames |
-| High | Gravity vector in body frame | **TODO** | Better orientation signal, -1 obs dim |
+| ~~Critical~~ | ~~Domain randomization~~ | **DONE** | ~~Policy survives eval dynamics~~ |
+| ~~High~~ | ~~Speed reward (vel_toward_gate)~~ | **DONE** | ~~Faster lap times~~ |
+| ~~Medium~~ | ~~Orientation penalty~~ | **DONE** | ~~Reduces crashes~~ |
+| ~~Low~~ | ~~Action smoothness penalty~~ | **DONE** | ~~Smoother flight~~ |
+| High | Gate normal in body frame | **TODO** | Consistent obs frames |
+| High | Gravity vector in body frame | **TODO** | Better orientation signal, -1 dim |
 | Medium | Non-zero initial velocity | **TODO** | Trains in-flight behavior |
-| ~~Medium~~ | ~~Orientation penalty~~ | **DONE (V2)** | ~~Reduces crashes~~ |
 | Medium | Third look-ahead gate | **TODO** | Better planning for powerloop/chicane |
 | Low | Weighted gate sampling | **TODO** | More practice on hard gates |
-| ~~Low~~ | ~~Action smoothness penalty~~ | **DONE (V2)** | ~~Smoother flight~~ |
+| N/A | Heading alignment reward | **REVERTED** | Harmful — over-constrains policy |
+| N/A | Manual obs normalization | **REVERTED** | Cannot replicate running stats |
+| N/A | Higher death cost (-50) | **REVERTED** | Makes drone too cautious |
 
-**Next priorities:** Gate normal in body frame (2.4.3) and gravity vector (2.4.4) are the highest-impact remaining changes. Both are observation-space improvements that can be done together.
+**Next priorities:** Gate normal in body frame (2.4.5) and gravity vector (2.4.6) are the highest-impact remaining changes. Both are observation-space improvements that can be done together without touching the reward structure that V2 validated.
+
+### 2.5 Lessons Learned from V3-V8 Experiments
+
+These experiments collectively demonstrate important principles for reward/strategy tuning:
+
+1. **Reward scale interactions are non-linear.** vel_toward_gate at scale 5.0 works alone, but combined with heading reward the velocity contribution (~750) drowns out gate_pass (200). Adding rewards is not additive — always check the magnitude of each component on WandB.
+
+2. **Orientation penalty is load-bearing.** The -2.0 scale at 0.5 rad threshold is critical. Reducing to -0.5 (V3) caused flips; the drone needs strong tilt penalty to survive the gate 3->4 tight turn. This is not just a "nice to have" — it's structural.
+
+3. **`empirical_normalization` is essential and cannot be manually replicated.** Running mean/std normalization adapts as the observation distribution shifts during training. Fixed divisors (V8) cannot match this. Since `rsl_rl_ppo_cfg.py` isn't submitted, the normalizer state must be saved in and loaded from the checkpoint.
+
+4. **Penalty magnitude affects speed.** death_cost=-50 (V6) made the drone too cautious (~26s vs ~17s). Penalizing crashes is necessary, but excessive penalty teaches the policy to avoid risk rather than fly fast.
+
+5. **Don't fix what works.** V2's reward structure is validated at ~17s/3-laps. Future improvements should focus on observations and resets (which don't risk destabilizing the reward signal) rather than reward tuning.
 
 ---
 
@@ -537,4 +579,8 @@ Both PPO and the strategy must work together:
 
 A well-tuned PPO with a bad strategy converges quickly to a bad policy. A good strategy with a buggy PPO doesn't converge at all.
 
+**Current status:** V2/V9 achieves 3 laps in ~17s. PPO is stable and complete. The reward structure is validated — further speed improvements should come from observation-space enhancements (body-frame gate normals, gravity vector) and reset improvements (non-zero initial velocity), not reward re-tuning.
+
 **Primary evaluation metric:** 3-lap completion time on the powerloop track under randomized dynamics.
+
+**Key risk:** `empirical_normalization = True` is set in the non-submitted `rsl_rl_ppo_cfg.py`. Must verify that the normalizer state is persisted in the checkpoint and loaded by the TA's evaluation runner.
