@@ -124,3 +124,27 @@ self._kd_omega_y_max = self.cfg.kd_omega_y * 1.3
 ```
 
 Consider strategies like domain randomization and adaptation so your policy can still succeed despite a dynamics mismatch. The evaluation environment will be held constant for all students.
+
+There are only two differences between your eval and the TAs' eval: 
+
+The initial pose: When you run play_race.py yourself, you execute the code within if not self.cfg.is_train. That code uniformly samples x_local and y_local within (-3.0, -0.5) and (-1.0, 1.0) respectively. When the TA's run play_race.py, we will hard code a value for x_local and y_local. This hard coded value will be within the same bounds (-3.0, -0.5) and (-1.0, 1.0).
+
+The TA's eval code will randomly sample 3 parameters from the list of parameters in section 3.1 of the project handout. They will be sampled only once within the bounds shown in the handout, and will be held consistent for all students.
+
+I highly recommend that you "self-evaluate" with various combinations of randomly selected parameters. If your policy performs well on 5 such combinations, it is very likely robust enough for the TAs' evaluation environment.
+
+You will separately submit a 1-2 page write-up documenting what was implemented and how your racing strategy was developed.
+
+
+In the Canvas code submission, you will upload the following files:
+
+src/third_parties/rsl_rl_local/rsl_rl/algorithms/ppo.py
+
+src/third_parties/rsl_rl_local/rsl_rl/storage/rollout_storage.py (If edited the advantage computation)
+
+src/isaac_quad_sim2real/tasks/race/config/crazyflie/quadcopter_strategies.py
+
+a .zip of your policy directory, containing the params folder as well as ONLY ONE .pt file (your best one). This directory already exists as logs/rsl_rl/quadcopter_direct/2025-MM-DD_HH-MM-SS
+
+Recognize that you cannot submit quadcopter_env.py! If your policy during inference is dependent on changes to that code, your policy will break or fail to execute when the TAs run it. Consider backing up your work and doing a fresh git pull of the project repo to ensure your policy folder and quadcopter_strategies.py can run before submitting.
+

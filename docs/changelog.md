@@ -2,6 +2,92 @@
 
 All notable changes to this project will be documented in this file.
 
+## [V9] - 2026-03-28
+
+### Changed
+- **Full revert to exact V2 setup** — removed V8's manual observation normalization, re-enabled `empirical_normalization = True` in `rsl_rl_ppo_cfg.py`.
+- V8's manual normalization (dividing by 3.0/5.0) did not replicate V2's performance, suggesting `empirical_normalization` uses running mean/std that manual fixed constants can't match.
+
+### Experiment Observations
+- V8 manual normalization still underperformed compared to V2. Confirmed that `empirical_normalization = True` is essential for V2-level results.
+- ⚠️ `rsl_rl_ppo_cfg.py` is not submitted — need to verify the TA's runner loads the normalizer from checkpoint automatically.
+
+## [V8] - 2026-03-28
+
+### Added
+- **Manual observation normalization** in `get_observations()` — divides velocities by 3.0, angular velocities by 5.0, gate positions by 5.0. Quaternion, gate normal, sin/cos yaw error, and actions are already in [-1,1]. This replicates the benefit of `empirical_normalization` but lives in the submitted file (`quadcopter_strategies.py`), so it works regardless of the TA's config.
+
+### Experiment Observations
+- V7 showed that removing empirical normalization dramatically reduced all reward metrics (vel: 800→200, progress: 100→30, gate_pass: 200→50). Manual normalization should recover V2-level performance.
+
+## [V7] - 2026-03-28
+
+### Changed
+- **Reverted to V2 reward structure** — V2 had the best performance (gate_pass ~200, 3 laps in ~17s). V3-V6 experiments with heading/velocity reward tuning degraded performance.
+- **Restored vel_toward_gate** at scale 5.0, orientation at -2.0 (threshold 0.5 rad), death_cost at -10.0.
+- **Removed heading reward** — added in V4, didn't improve over V2.
+- **Reverted `empirical_normalization`** to `False` — this config file (`rsl_rl_ppo_cfg.py`) is not submitted, so the TA's default would break inference if trained with it enabled.
+
+### Experiment Observations
+- Pending training results. Expected to match V2 performance.
+
+## [V6] - 2026-03-28
+
+### Removed
+- **vel_toward_gate reward** — caused speed-obsessed behavior leading to crashes at tight turns (gate 3→4).
+
+### Changed
+- **Reverted orientation** to V2 values: scale -2.0, threshold 0.5 rad (~30°) — V2 had the best gate completion rate.
+- **death_cost**: -10 → -50 — stronger crash avoidance for dangerous gate transitions.
+- **heading scale**: 1.0 → 0.5 — gentle directional guidance without dominating.
+
+### Experiment Observations
+- Completed 3 laps in ~26s (slower than V2's ~17s).
+- Drone flew more cautiously due to higher death_cost (-50) and lower velocity incentive.
+- No crashes observed, but significantly slower lap times due to removed velocity reward.
+- Conclusion: removing vel_toward_gate made the drone too conservative; the higher death_cost added unnecessary caution.
+
+## [V5] - 2026-03-28
+
+### Changed
+- **vel_toward_gate scale**: 5.0 → 2.0 — was dominating the reward signal (~750 contribution), causing the drone to fly too fast and crash at turns.
+- **heading scale**: 2.0 → 1.0 — lighter touch to avoid over-constraining maneuvers.
+
+### Experiment Observations
+- Still crashing frequently, especially at gate 3→4 (middle-bottom tight turn).
+- Passes 2-3 gates then crashes on most episodes. Never completed a full lap.
+- wandb: vel_toward_gate ~60, progress ~20 (down from V2's ~100), gate_pass ~40 (down from V2's ~200).
+- Conclusion: velocity reward still dominated even at scale 2.0. The heading+velocity combination overconstrained the policy.
+
+## [V4] - 2026-03-27
+
+### Added
+- **Heading alignment reward**: `cos(yaw_error)` × 2.0 — encourages the drone to point directly toward the gate, preventing looping/circling approaches.
+
+### Changed
+- **Orientation penalty scale**: -0.5 → -1.0 (middle ground between V2's -2.0 and V3's -0.5).
+- **Tilt threshold**: 1.0 rad → 0.75 rad (~43°) — prevents flips while still allowing aggressive racing lean.
+
+### Experiment Observations
+- Very poor performance — constant crashing. Passes 1-3 gates then dies every episode.
+- wandb: vel_toward_gate ~150 (extremely high), gate_pass collapsed to ~40, heading dropped from ~15 to ~0.
+- The velocity reward (scale 5.0) dominated the reward signal at ~750 contribution, drowning out gate_pass (200).
+- The drone learned to barrel toward gates at max speed but couldn't decelerate for tight turns (gate 3→4).
+- Conclusion: vel_toward_gate at scale 5.0 combined with heading reward created a speed-obsessed policy.
+
+## [V3] - 2026-03-27
+
+### Changed
+- **Orientation penalty scale** reduced from -2.0 to -0.5 — previous value was limiting top speed by penalizing necessary racing tilt angles.
+- **Tilt threshold** raised from 0.5 rad (~30°) to 1.0 rad (~57°) — allows more aggressive lean into turns while still penalizing dangerous attitudes.
+- **Reverted `empirical_normalization`** to `False` — this config file is not submitted, so the TA's default would break inference if trained with it enabled.
+
+### Experiment Observations
+- Drone completed laps but developed a **flip** at the middle gate transition (gate 3→4).
+- After exiting the upper gate, the drone would loop around to the right side before passing through the bottom gate, instead of taking the direct path.
+- The reduced orientation penalty allowed excessive tilt angles, leading to tumbling at high-speed transitions.
+- Conclusion: orientation penalty of -0.5 was too permissive; the 1.0 rad threshold allowed near-flips.
+
 ## [V2] - 2026-03-27
 
 ### Added
@@ -14,6 +100,13 @@ All notable changes to this project will be documented in this file.
   - Ranges match TA evaluation ranges from project description
   - Re-randomized on every episode reset for maximum diversity
 - **Empirical observation normalization** enabled in `rsl_rl_ppo_cfg.py`.
+
+### Experiment Observations
+- **Best performing version.** Consistently completed 3 laps.
+- wandb: vel_toward_gate ~800, progress ~100-125, gate_pass ~200 (saturated), crash ~-0.2 to -0.8.
+- Orientation penalty was large (-60) but drone still raced well — stable flight with no flips.
+- Smoothness at ~0 — policy naturally learned smooth actions without needing higher penalty.
+- The strong orientation penalty (-2.0 at 30° threshold) kept the drone upright and stable through tight turns.
 
 ## [V1] - 2026-03-27
 
@@ -28,6 +121,11 @@ All notable changes to this project will be documented in this file.
 - **Reward structure**: progress toward gate (distance reduction), gate-pass bonus (200.0 scale), crash penalty (-1.0 scale), death cost (-10.0).
 - **Randomized reset strategy**: Random starting gate, spawn 1.5-3m behind gate with ±0.5m lateral, ±0.3m vertical, and ±0.15 rad yaw noise. Altitude clamped above 0.15m.
 - Added `gate_pass_reward_scale` to `train_race.py` reward scales.
+
+### Experiment Observations
+- Successfully completed laps with basic reward structure.
+- Training was stable thanks to adaptive LR schedule (fixed prior instability in later iterations).
+- No velocity or orientation shaping — drone learned to fly toward gates using only progress and gate-pass rewards.
 
 ## [Unreleased]
 

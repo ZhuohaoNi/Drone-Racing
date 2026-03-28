@@ -17,6 +17,6 @@ export PYTHONPATH="$(pwd):$PYTHONPATH"
 python scripts/rsl_rl/train_race.py \
     --task Isaac-Quadcopter-Race-v0 \
     --num_envs 8192  \
-    --max_iterations 5000 \
+    --max_iterations 3000 \
     --headless \
     --logger wandb

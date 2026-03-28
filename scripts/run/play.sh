@@ -33,4 +33,4 @@ python scripts/rsl_rl/play_race.py \
     --checkpoint best_model.pt \
     --headless \
     --video \
-    --video_length 800
+    --video_length 1600
