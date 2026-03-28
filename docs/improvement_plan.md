@@ -43,14 +43,15 @@ Try `entropy_coef` first. If that alone doesn't help, combine with `init_noise_s
 
 ### 1B: Strategy Ceiling
 
-PPO is learning fine but the reward/observation design limits what's achievable.
+PPO is learning fine but the reward/observation design limits what's achievable. Note: V2 already added speed reward, orientation penalty, and smoothness penalty. If still hitting a ceiling, the remaining observation improvements are the most impactful.
 
-| Change | File | What to Do |
-|---|---|---|
-| Add speed reward | `train_race.py` + `quadcopter_strategies.py` | Add velocity-toward-gate reward component (see `strategy_design.md` Section 2.4.2) with `speed_reward_scale=10.0` |
-| Fix gate normal frame | `quadcopter_strategies.py:173` | Transform gate normal to body frame (see `strategy_design.md` Section 2.4.3) |
-| Add gravity vector | `quadcopter_strategies.py` obs | Replace quaternion (4D) with gravity-in-body (3D) (see `strategy_design.md` Section 2.4.4) |
-| Add look-ahead gate | `quadcopter_strategies.py` obs | Add third gate in body frame (+3 dims) for better planning |
+| Change | File | What to Do | Status |
+|---|---|---|---|
+| ~~Add speed reward~~ | — | ~~`vel_toward_gate` with scale=5.0~~ | **DONE (V2)** |
+| Fix gate normal frame | `quadcopter_strategies.py` | Transform gate normal to body frame (see `strategy_design.md` Section 2.4.3) | TODO |
+| Add gravity vector | `quadcopter_strategies.py` obs | Replace quaternion (4D) with gravity-in-body (3D) (see `strategy_design.md` Section 2.4.4) | TODO |
+| Add look-ahead gate | `quadcopter_strategies.py` obs | Add third gate in body frame (+3 dims) for better planning | TODO |
+| Increase `vel_toward_gate` scale | `train_race.py` | Current 5.0 may be too conservative — try 10.0-15.0 | If needed |
 
 ---
 
@@ -73,6 +74,8 @@ Reward hacking. The policy is exploiting the progress reward by oscillating near
 
 The ratio `gate_pass / progress_goal` should be at least 10:1. Currently 4:1. Increasing it ensures passing a gate is always more valuable than hovering near one.
 
+**V2 note:** The `vel_toward_gate` reward (scale=5.0) could also contribute to reward hacking if the drone oscillates at speed near a gate. If this pattern persists despite scale adjustment, reduce `vel_toward_gate_reward_scale` as well.
+
 If the drone still doesn't pass gates after scale adjustment, the observation space may not provide enough information. Check that gate positions in body frame are correct (verify `subtract_frame_transforms` is called with the right argument order).
 
 ---
@@ -89,18 +92,18 @@ The drone is crashing frequently — either into gates, the ground, or flying ou
 
 ### Fixes (apply in order)
 
-**Step 1 — Increase crash penalty:**
+**Step 1 — Increase crash/orientation penalty scales:**
+
+V2 already includes an orientation penalty (`orientation_reward_scale=-2.0`) and smoothness penalty (`smoothness_reward_scale=-0.5`). If deaths are still high, increase their magnitude:
 
 | Change | File | Current | Recommended |
 |---|---|---|---|
-| Crash penalty | `train_race.py:112` | `crash_reward=-1.0` | `crash_reward=-5.0` |
-| Death cost | `train_race.py:113` | `death_cost=-10.0` | `death_cost=-50.0` |
+| Crash penalty | `train_race.py` | `crash_reward=-1.0` | `crash_reward=-5.0` |
+| Death cost | `train_race.py` | `death_cost=-10.0` | `death_cost=-50.0` |
+| Orientation penalty | `train_race.py` | `orientation_reward_scale=-2.0` | `orientation_reward_scale=-5.0` |
+| Lower tilt threshold | `quadcopter_strategies.py` | `0.5 rad` | `0.3 rad` |
 
-**Step 2 — If still crashing after penalty increase, add orientation reward:**
-
-Add an alignment reward in `quadcopter_strategies.py` `get_rewards()` to penalize extreme tilt angles (see `strategy_design.md` Section 2.4.6). This makes the drone fly more conservatively.
-
-**Step 3 — If crashing only at specific gates (check video):**
+**Step 2 — If crashing only at specific gates (check video):**
 
 Use weighted gate sampling to give more practice on those gates (see `strategy_design.md` Section 2.4.8).
 
@@ -201,15 +204,17 @@ Longer rollouts give GAE more data. Lower lambda reduces variance (at the cost o
 - Video shows the drone passing gates but at low speed.
 
 ### Diagnosis
-No speed incentive. The policy optimizes for safely passing gates, not for doing it quickly.
+V2 added `vel_toward_gate` reward (scale=5.0), but the scale may be too conservative to overcome the safety-oriented rewards (orientation penalty, smoothness penalty).
 
 ### Fixes
 
-| Change | File | What to Do |
-|---|---|---|
-| Add speed reward | `train_race.py` + `quadcopter_strategies.py` | Add velocity-toward-gate reward, `speed_reward_scale=10.0` (see `strategy_design.md` Section 2.4.2) |
-| Add initial velocity to resets | `quadcopter_strategies.py` `reset_idx()` | Spawn with 0-3 m/s forward velocity (see `strategy_design.md` Section 2.4.5) |
-| Reduce episode length | `quadcopter_env.py:134` | `episode_length_s=30.0` | `episode_length_s=20.0` |
+| Change | File | What to Do | Status |
+|---|---|---|---|
+| ~~Add speed reward~~ | — | ~~`vel_toward_gate` with scale=5.0~~ | **DONE (V2)** |
+| Increase speed reward scale | `train_race.py` | `vel_toward_gate_reward_scale=5.0` -> `10.0-15.0` | If still slow |
+| Reduce smoothness penalty | `train_race.py` | `smoothness_reward_scale=-0.5` -> `-0.2` | If smoothness conflicts with speed |
+| Add initial velocity to resets | `quadcopter_strategies.py` `reset_idx()` | Spawn with 0-3 m/s forward velocity (see `strategy_design.md` Section 2.4.5) | TODO |
+| Reduce episode length | `quadcopter_env.py` | `episode_length_s=30.0` -> `20.0` | If needed |
 
 Reducing episode length creates time pressure — the policy must complete laps faster to earn more gate_pass rewards before timeout.
 
@@ -217,24 +222,27 @@ Reducing episode length creates time pressure — the policy must complete laps 
 
 ## Symptom 9: Policy Works in Training but Fails Under Domain Randomization
 
+> **Note:** V2 added domain randomization to training (`_randomize_dynamics()` in `reset_idx()`), so this symptom should be significantly less likely. If it still occurs, the randomization ranges may need adjustment.
+
 ### What you see
 - Good WandB metrics during training.
 - Video from `play_race.py` (which applies domain randomization) shows the drone crashing or drifting.
 
 ### Diagnosis
-The policy overfit to nominal physics parameters. It can't handle the +/-5% TWR, 0.5-2x drag, or +/-15-30% PID gain changes.
+Despite V2's domain randomization, the policy may still struggle if:
+- The training randomization ranges don't fully cover the eval ranges (verify against project description Section 3.1)
+- The policy hasn't trained long enough to generalize (need 5000+ iterations with DR)
+- A specific parameter combination causes failures (e.g., high drag + low TWR)
 
-### Fix
+### Fixes
 
-Add domain randomization to `quadcopter_strategies.py` `reset_idx()`. See `strategy_design.md` Section 2.4.1 for the exact code. This is the single highest-impact change for evaluation performance.
-
-After adding domain randomization, you may need to:
-
-| Adjustment | Reason |
+| Change | What to Do |
 |---|---|
+| Verify DR ranges match eval | Compare `_randomize_dynamics()` values against Section 3.1 ranges |
 | Increase `max_iterations` to 5000+ | Policy needs more training to generalize across parameter ranges |
 | Slightly increase `progress_goal_reward_scale` | Drone may be more conservative under randomized dynamics |
 | Widen spawn distance range | Help policy learn recovery from diverse initial conditions |
+| Add extreme-case sampling | Occasionally sample at the edges of DR ranges (min TWR + max drag) |
 
 ---
 
@@ -260,17 +268,20 @@ The powerloop requires a vertical loop — the policy needs enough look-ahead to
 
 ---
 
-## Recommended Improvement Order
+## Recommended Improvement Order (Updated for V2)
 
-For a fresh training run, apply changes in this sequence. After each step, run a training and verify improvement on WandB before proceeding to the next.
+V2 already implemented several key improvements. Items marked DONE are in the current codebase. The remaining steps should be applied in order, verifying each on WandB before proceeding.
 
-| Step | Changes | Files Modified | Verify By |
-|---|---|---|---|
-| 1 | `entropy_coef=0.005` | `rsl_rl_ppo_cfg.py` | Entropy stays above 0 throughout training |
-| 2 | Domain randomization in `reset_idx()` | `quadcopter_strategies.py` | Policy survives `play_race.py` with randomized dynamics |
-| 3 | Gate normal to body frame + gravity vector | `quadcopter_strategies.py` | Faster reward growth in early iterations vs. previous run |
-| 4 | Speed reward (`scale=10.0`) | `train_race.py` + `quadcopter_strategies.py` | `Episode_Termination/time_out` decreases; shorter episodes |
-| 5 | Non-zero initial velocity in resets | `quadcopter_strategies.py` | Fewer crashes at gate passage (drone practiced in-flight) |
-| 6 | Third look-ahead gate | `quadcopter_strategies.py` | `gate_pass` plateau breaks past 5+ gates |
-| 7 | Reward scale tuning based on WandB | `train_race.py` | Ratio adjustments per Symptom 2 or 3 |
-| 8 | PPO hyperparameter tuning | `rsl_rl_ppo_cfg.py` | Per symptoms 4-7 as they arise |
+| Step | Changes | Status | Files Modified | Verify By |
+|---|---|---|---|---|
+| ~~1~~ | ~~Domain randomization in `reset_idx()`~~ | **DONE (V2)** | — | — |
+| ~~2~~ | ~~Speed reward (`vel_toward_gate`, scale=5.0)~~ | **DONE (V2)** | — | — |
+| ~~3~~ | ~~Orientation penalty (tilt > 0.5 rad, scale=-2.0)~~ | **DONE (V2)** | — | — |
+| ~~4~~ | ~~Smoothness penalty (scale=-0.5)~~ | **DONE (V2)** | — | — |
+| ~~5~~ | ~~Empirical observation normalization~~ | **DONE (V2)** | — | — |
+| **6** | `entropy_coef=0.005` | **TODO** | `rsl_rl_ppo_cfg.py` | Entropy stays above 0 throughout training |
+| **7** | Gate normal to body frame + gravity vector | **TODO** | `quadcopter_strategies.py` | Faster reward growth in early iterations vs. previous run |
+| **8** | Non-zero initial velocity in resets | **TODO** | `quadcopter_strategies.py` | Fewer crashes at gate passage (drone practiced in-flight) |
+| **9** | Third look-ahead gate | **TODO** | `quadcopter_strategies.py` | `gate_pass` plateau breaks past 5+ gates |
+| **10** | Reward scale tuning based on WandB | **TODO** | `train_race.py` | Ratio adjustments per Symptom 2 or 3 |
+| **11** | PPO hyperparameter tuning | **TODO** | `rsl_rl_ppo_cfg.py` | Per symptoms 4-7 as they arise |
