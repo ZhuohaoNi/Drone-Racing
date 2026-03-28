@@ -7,7 +7,32 @@
 
 In this project, you will use NVIDIA Isaac Lab to train a drone racing policy! You will write the PPO algorithm into the `rsl_rl` learning library, construct an observation space, shape rewards, and define an episode reset strategy.
 
-*Figure 1: Powerloop race track and example raceline in blue. The green arrows indicate the gate-passing directions and green numbers indicate the gate-passing sequence.*
+Desired trajectory:
+Based on the provided figure and the supplementary instructions, here is the improved and more precise description of the drone’s trajectory. This sequence highlights the advanced maneuvers like the **Powerloop** and the **Chicane**, which are key to a fast lap time.
+
+### **1. Initial Approach (Start to Gate 1)**
+*   **Start to Gate 0:** From the blue **Start** point, the drone launches and passes through **Gate 0** (the rightmost gate) from right to left, entering the inner track area.
+*   **Gate 0 to Gate 1:** The drone then pulls up and performs a wide, climbing left-hand turn to reach the elevated **Gate 1** (2m high). It passes through Gate 1 heading from the back-right toward the center-left.
+
+### **2. The Powerloop Maneuver (Gates 2 and 3)**
+The drone enters the central double-gate structure to perform the **Powerloop**.
+*   **Gate 2 (Entry):** The drone descends from Gate 1 and enters the **left opening** of the double gate, passing through it in a "forward" direction (away from the camera).
+*   **The Loop:** To execute the powerloop as described, the drone pulls up immediately after exiting Gate 2, performing a vertical 360-degree loop. Crucially, while inverted or at the top of the loop, the drone drifts slightly to the right to align with the adjacent opening.
+*   **Gate 3 (Exit):** The drone completes the loop by diving back down and entering the **right opening** of the same structure from the **same side** (forward/away from the camera) as it did for Gate 2. This "same side" entry is the defining characteristic of the racing powerloop.
+
+### **3. The High-Speed Transition (Gate 4)**
+*   **Gate 3 to Gate 4:** After exiting the powerloop at Gate 3, the drone accelerates into a wide, ascending right-hand turn. It reaches the second elevated gate, **Gate 4** (2m high), passing through it from the back of the track toward the front.
+
+### **4. The Chicane Sequence (Gates 5, 6, and 0)**
+The track concludes with a "chicane," a series of offset gates that require rapid, subtle alternating turns.
+*   **Gate 5:** The drone descends from Gate 4 and heads toward the front-left. It passes through **Gate 5** heading from left to right.
+*   **Gate 6 (The Chicane Pass):** From Gate 5, the drone flicks back toward the center structure. It passes through the **right opening** (the same physical object as Gate 3) but in the **opposite direction** (heading back toward the camera/front of the track).
+*   **Gate 0 (Final Dash):** Immediately after Gate 6, the drone makes a final sharp flick to the right to pass through **Gate 0** again, heading from right to left (toward the center) to complete the sequence or begin a new lap.
+
+### **Summary of Key Features**
+*   **Central Double-Gate:** This structure is used three times: twice in the "forward" direction for the Powerloop (Gates 2 & 3) and once in the "backward" direction for the Chicane (Gate 6).
+*   **Gate 3 vs. Gate 6:** While physically the same opening, they are distinct track milestones. Passing through away from the camera satisfies Gate 3; passing through toward the camera satisfies Gate 6.
+*   **Maneuver Efficiency:** The powerloop (2 $\rightarrow$ 3) allows the drone to stay tight to the central structure, saving the time a wide 180-degree flat turn would otherwise require.
 
 We have designed a brand-new Powerloop race track this semester! A powerloop is a maneuver where a drone performs a vertical loop in order to enter two adjacent gates from the same side, as illustrated with gates 2 and 3. Although this maneuver is not necessary to complete the track, executing it well will significantly improve your lap time. A chicane is a high-speed dash through offset gates that require subtle but rapidly alternating turns, as illustrated with gates 5, 6, and 0. Notice that gate 3 and gate 6 are physically the same object, but represent a different gate-passing direction in the track sequence.
 

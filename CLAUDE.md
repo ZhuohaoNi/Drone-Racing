@@ -68,3 +68,6 @@ During eval, randomizes thrust-to-weight (0.95–1.05×), aerodynamic drag (0.5�
 - **Strategy pattern**: The env delegates reward, observation, and reset logic to a strategy object, keeping core physics separate from the learning task definition.
 - **Gate passage**: Tracked by drone position in gate-local frame. A gate is passed when `dist_to_gate < 0.1`. Same physical gate can serve as two waypoints with different pass directions (e.g., gates 3 & 6 on powerloop).
 - **Crash detection**: Contact sensor on drone body; crash triggered when contact forces exceed threshold for 100 consecutive timesteps.
+
+## Insturctions to follow for experiements
+Every time we tune the reward or change the expriementation and get a version, we will record it in @docs/changelog.md. Also, when finding the best reward configuration, we need to do it in a systematice way, e.g. add a script or grid search to find the best hyperparameter. Also we should record the metrics/observation, and coding agent should provide guidance on how to interpret the metrics.
