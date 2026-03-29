@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [V11] - 2026-03-29
+
+### Added
+- **Wrong-side gate crossing detection** — if drone passes through the current target gate from the wrong direction (negative→positive x in gate frame), episode is immediately terminated (`_crashed = 200`). Prevents reverse-through exploits at the double-gate (powerloop) structure.
+- **Gate index observation** — normalized `current_gate_idx / num_gates` added as 1-dim observation. Policy now knows which gate it's targeting, enabling gate-specific maneuvers (e.g., powerloop at gates 2→3). Total observation dims: 25 → 26.
+
+### Fixed
+- **Eval mode parameter initialization** — added `_set_default_dynamics()` that sets physics parameters to nominal config values during eval (`is_train=False`). Previously, guarding DR with `is_train` left all parameters at zero, causing the drone to be unable to fly.
+
+## [V10] - 2026-03-29
+
+### Changed
+- **Domain randomization guarded with `is_train`** — DR now only runs during training. During eval (`is_train=False`), the TA's fixed parameters in `quadcopter_env.py` are preserved instead of being overwritten.
+- **Improved reset strategy**:
+  - Curriculum-based spawn distance: [1.0, 2.0]m early → [1.5, 4.0]m later (ramps over 800 iterations)
+  - Wider spawn noise: lateral ±1.0m (was ±0.5), vertical ±0.5m (was ±0.3), yaw ±0.3 rad (was ±0.15)
+  - 20% of resets have initial velocity (1-3 m/s) toward gate for momentum handling
+  - 10% mid-track spawns between consecutive gates for transition learning
+
+### Added
+- **Lap time tracking** during training — detects full-lap completions, logs `Lap/mean_lap_time`, `Lap/min_lap_time`, `Lap/best_lap_time`, and `Lap/laps_completed` to wandb.
+- **`eval_race.py`** — self-evaluation script with two phases:
+  1. Default parameters, 1 env (mimics TA evaluation conditions)
+  2. Domain randomization, 100 envs (stability testing)
+  Reports gates passed, lap count, completion rate, and timing for both phases.
+
 ## [V9] - 2026-03-28
 
 ### Changed

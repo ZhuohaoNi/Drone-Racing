@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import torch
 import numpy as np
+from collections import deque
 from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz, euler_xyz_from_quat, wrap_to_pi, matrix_from_quat
@@ -42,9 +43,20 @@ class DefaultQuadcopterStrategy:
                 for key in keys
             }
 
-        # Domain randomization: randomize physical parameters for robustness
-        # Ranges match the TA evaluation ranges from project description
-        self._randomize_dynamics(torch.arange(self.num_envs, device=self.device))
+        # Lap time tracking
+        self._lap_start_step = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._lap_times = []  # buffer of completed lap times (seconds)
+        self._best_lap_time = float('inf')
+
+        # Success rate tracking: rolling window of episode outcomes
+        self._episode_successes = deque(maxlen=100)  # 1 = completed 3 laps, 0 = did not
+
+        # Domain randomization: only during training so TA's fixed params are preserved during eval
+        if self.cfg.is_train:
+            self._randomize_dynamics(torch.arange(self.num_envs, device=self.device))
+        else:
+            # Set default (nominal) parameter values for evaluation
+            self._set_default_dynamics(torch.arange(self.num_envs, device=self.device))
 
     def _randomize_dynamics(self, env_ids: torch.Tensor):
         """Randomize physical parameters for domain randomization.
@@ -82,6 +94,26 @@ class DefaultQuadcopterStrategy:
         # Motor time constants (fixed)
         self.env._tau_m[env_ids] = cfg.tau_m
 
+    def _set_default_dynamics(self, env_ids: torch.Tensor):
+        """Set physical parameters to nominal default values (for evaluation)."""
+        n = len(env_ids)
+        cfg = self.cfg
+
+        self.env._thrust_to_weight[env_ids] = cfg.thrust_to_weight
+        self.env._K_aero[env_ids, 0] = cfg.k_aero_xy
+        self.env._K_aero[env_ids, 1] = cfg.k_aero_xy
+        self.env._K_aero[env_ids, 2] = cfg.k_aero_z
+        self.env._kp_omega[env_ids, 0] = cfg.kp_omega_rp
+        self.env._kp_omega[env_ids, 1] = cfg.kp_omega_rp
+        self.env._kp_omega[env_ids, 2] = cfg.kp_omega_y
+        self.env._ki_omega[env_ids, 0] = cfg.ki_omega_rp
+        self.env._ki_omega[env_ids, 1] = cfg.ki_omega_rp
+        self.env._ki_omega[env_ids, 2] = cfg.ki_omega_y
+        self.env._kd_omega[env_ids, 0] = cfg.kd_omega_rp
+        self.env._kd_omega[env_ids, 1] = cfg.kd_omega_rp
+        self.env._kd_omega[env_ids, 2] = cfg.kd_omega_y
+        self.env._tau_m[env_ids] = cfg.tau_m
+
     def get_rewards(self) -> torch.Tensor:
         """Compute rewards: progress, velocity toward gate, gate-pass bonus, crash, orientation, smoothness."""
 
@@ -100,11 +132,36 @@ class DefaultQuadcopterStrategy:
         gate_passed = crossed_plane & within_bounds
         ids_gate_passed = torch.where(gate_passed)[0]
 
+        # --- Wrong-side crossing detection (terminate episode) ---
+        wrong_side_crossed = (prev_x < 0) & (curr_x >= 0) & within_bounds
+        wrong_side_ids = torch.where(wrong_side_crossed)[0]
+        if len(wrong_side_ids) > 0:
+            self.env._crashed[wrong_side_ids] = 200  # triggers termination via _crashed > 100
+
         self.env._idx_wp[ids_gate_passed] = (self.env._idx_wp[ids_gate_passed] + 1) % num_gates
         self.env._n_gates_passed[ids_gate_passed] += 1
         self.env._desired_pos_w[ids_gate_passed] = self.env._waypoints[self.env._idx_wp[ids_gate_passed], :3]
         self.env._prev_x_drone_wrt_gate = curr_x.clone()
         gate_pass = gate_passed.float()
+
+        # --- Lap time tracking ---
+        if len(ids_gate_passed) > 0:
+            dt = self.cfg.sim.dt * self.cfg.decimation
+            # Check which of the gate-passing envs just completed a full lap
+            gates_passed_count = self.env._n_gates_passed[ids_gate_passed]
+            lap_complete_mask = (gates_passed_count > 0) & (gates_passed_count % num_gates == 0)
+            lap_complete_ids = ids_gate_passed[lap_complete_mask]
+            if len(lap_complete_ids) > 0:
+                current_step = self.env.episode_length_buf[lap_complete_ids]
+                lap_steps = current_step - self._lap_start_step[lap_complete_ids]
+                lap_seconds = lap_steps.float() * dt
+                for t in lap_seconds.cpu().tolist():
+                    if t > 0:  # filter out invalid negative times from initial randomized episodes
+                        self._lap_times.append(t)
+                        if t < self._best_lap_time:
+                            self._best_lap_time = t
+                # Reset lap start for next lap
+                self._lap_start_step[lap_complete_ids] = current_step
 
         # --- Progress reward ---
         current_distance = torch.linalg.norm(
@@ -161,7 +218,7 @@ class DefaultQuadcopterStrategy:
         return reward
 
     def get_observations(self) -> Dict[str, torch.Tensor]:
-        """25-dim ego-centric observation: body velocities, quaternion, gate-relative positions, gate normal, yaw error, prev actions."""
+        """26-dim ego-centric observation: body velocities, quaternion, gate-relative positions, gate normal, yaw error, gate index, prev actions."""
 
         # TODO ----- START ----- Define tensors for your observation space. Be careful with frame transformations
         num_gates = self.env._waypoints.shape[0]
@@ -203,6 +260,9 @@ class DefaultQuadcopterStrategy:
 
         # Previous actions (4 dims)
         prev_actions = self.env._previous_actions                       # (num_envs, 4)
+
+        # Gate index, normalized (1 dim) — lets policy know which gate it's targeting
+        gate_index_norm = (current_gate_idx.float() / num_gates).unsqueeze(1)  # (num_envs, 1)
         # TODO ----- END -----
 
         obs = torch.cat(
@@ -216,6 +276,7 @@ class DefaultQuadcopterStrategy:
                 gate_normal,        # current gate normal direction (3)
                 sin_yaw_error,      # sin of yaw error to gate      (1)
                 cos_yaw_error,      # cos of yaw error to gate      (1)
+                gate_index_norm,    # normalized gate index         (1)
                 prev_actions,       # previous actions              (4)
             ],
             # TODO ----- END -----
@@ -243,6 +304,25 @@ class DefaultQuadcopterStrategy:
             extras["Episode_Termination/died"] = torch.count_nonzero(self.env.reset_terminated[env_ids]).item()
             extras["Episode_Termination/time_out"] = torch.count_nonzero(self.env.reset_time_outs[env_ids]).item()
             self.env.extras["log"].update(extras)
+
+            # Track 3-lap success rate
+            num_gates = self.env._waypoints.shape[0]
+            for eid in env_ids:
+                completed_3 = (self.env._n_gates_passed[eid].item() >= 3 * num_gates)
+                self._episode_successes.append(1.0 if completed_3 else 0.0)
+            if len(self._episode_successes) > 0:
+                success_rate = sum(self._episode_successes) / len(self._episode_successes) * 100.0
+                self.env.extras["log"]["Lap/success_rate_3lap"] = success_rate
+
+            # Log lap time statistics
+            if len(self._lap_times) > 0:
+                lap_t = torch.tensor(self._lap_times)
+                extras["Lap/mean_lap_time"] = lap_t.mean().item()
+                extras["Lap/min_lap_time"] = lap_t.min().item()
+                extras["Lap/best_lap_time"] = self._best_lap_time
+                extras["Lap/laps_completed"] = len(self._lap_times)
+                self.env.extras["log"].update(extras)
+                self._lap_times.clear()  # clear buffer after logging
 
         # Call robot reset first
         self.env._robot.reset(env_ids)
@@ -284,7 +364,9 @@ class DefaultQuadcopterStrategy:
         num_gates = self.env._waypoints.shape[0]
 
         # Re-randomize dynamics for resetting environments (domain randomization)
-        self._randomize_dynamics(env_ids)
+        # Only during training so TA's fixed parameters are preserved during eval
+        if self.cfg.is_train:
+            self._randomize_dynamics(env_ids)
 
         # Random starting gate for each resetting environment
         waypoint_indices = torch.randint(0, num_gates, (n_reset,), device=self.device, dtype=self.env._idx_wp.dtype)
@@ -295,10 +377,32 @@ class DefaultQuadcopterStrategy:
         z_wp = self.env._waypoints[waypoint_indices][:, 2]
         theta = self.env._waypoints[waypoint_indices][:, -1]  # gate yaw
 
-        # Spawn 1.5-3m behind the gate with lateral and vertical noise
-        x_local = -torch.empty(n_reset, device=self.device).uniform_(1.5, 3.0)  # behind gate
-        y_local = torch.empty(n_reset, device=self.device).uniform_(-0.5, 0.5)  # lateral noise
-        z_local = torch.empty(n_reset, device=self.device).uniform_(-0.3, 0.3)  # vertical noise
+        # --- Curriculum-based spawn distance ---
+        # Early training: spawn close [1.0, 2.0]m; later: [1.5, 4.0]m
+        progress = min(self.env.iteration / 800.0, 1.0)  # ramp over 800 iterations
+        dist_min = 1.0 + 0.5 * progress   # 1.0 → 1.5
+        dist_max = 2.0 + 2.0 * progress   # 2.0 → 4.0
+
+        # Spawn behind the gate with wider lateral/vertical noise for robustness
+        x_local = -torch.empty(n_reset, device=self.device).uniform_(dist_min, dist_max)  # behind gate
+        y_local = torch.empty(n_reset, device=self.device).uniform_(-1.0, 1.0)  # wider lateral noise
+        z_local = torch.empty(n_reset, device=self.device).uniform_(-0.5, 0.5)  # wider vertical noise
+
+        # --- 10% mid-track spawns: between consecutive gates ---
+        mid_track_mask = torch.rand(n_reset, device=self.device) < 0.1
+        if mid_track_mask.any():
+            mid_ids = torch.where(mid_track_mask)[0]
+            next_wp = (waypoint_indices[mid_ids] + 1) % num_gates
+            lerp_t = torch.rand(len(mid_ids), device=self.device) * 0.6 + 0.2  # [0.2, 0.8]
+            mid_pos = (1 - lerp_t).unsqueeze(1) * self.env._waypoints[waypoint_indices[mid_ids], :3] + \
+                      lerp_t.unsqueeze(1) * self.env._waypoints[next_wp, :3]
+            # For mid-track spawns, override x/y/z with interpolated position
+            x0_wp[mid_ids] = self.env._waypoints[waypoint_indices[mid_ids], 0]  # target gate stays the same
+            y0_wp[mid_ids] = self.env._waypoints[waypoint_indices[mid_ids], 1]
+            # Set spawn position directly for mid-track envs
+            x_local[mid_ids] = 0.0
+            y_local[mid_ids] = 0.0
+            z_local[mid_ids] = 0.0
 
         # Rotate local offset to world frame using gate yaw
         cos_theta = torch.cos(theta)
@@ -309,19 +413,43 @@ class DefaultQuadcopterStrategy:
         initial_y = y0_wp - y_rot
         initial_z = (z_wp + z_local).clamp(min=0.15)  # ensure above ground
 
+        # Override mid-track spawn positions with interpolated positions
+        if mid_track_mask.any():
+            mid_ids = torch.where(mid_track_mask)[0]
+            next_wp = (waypoint_indices[mid_ids] + 1) % num_gates
+            lerp_t = torch.rand(len(mid_ids), device=self.device) * 0.6 + 0.2
+            mid_pos = (1 - lerp_t).unsqueeze(1) * self.env._waypoints[waypoint_indices[mid_ids], :3] + \
+                      lerp_t.unsqueeze(1) * self.env._waypoints[next_wp, :3]
+            initial_x[mid_ids] = mid_pos[:, 0]
+            initial_y[mid_ids] = mid_pos[:, 1]
+            initial_z[mid_ids] = mid_pos[:, 2].clamp(min=0.15)
+
         default_root_state[:, 0] = initial_x
         default_root_state[:, 1] = initial_y
         default_root_state[:, 2] = initial_z
 
-        # Point drone towards the target gate with yaw noise
+        # Point drone towards the target gate with wider yaw noise
         initial_yaw = torch.atan2(y0_wp - initial_y, x0_wp - initial_x)
-        yaw_noise = torch.empty(n_reset, device=self.device).uniform_(-0.15, 0.15)
+        yaw_noise = torch.empty(n_reset, device=self.device).uniform_(-0.3, 0.3)  # wider yaw noise
         quat = quat_from_euler_xyz(
             torch.zeros(n_reset, device=self.device),
             torch.zeros(n_reset, device=self.device),
             initial_yaw + yaw_noise
         )
         default_root_state[:, 3:7] = quat
+
+        # --- 20% velocity-initialized spawns: initial velocity toward gate ---
+        vel_init_mask = torch.rand(n_reset, device=self.device) < 0.2
+        if vel_init_mask.any():
+            vel_ids = torch.where(vel_init_mask)[0]
+            speed = torch.empty(len(vel_ids), device=self.device).uniform_(1.0, 3.0)
+            dir_to_gate = torch.stack([
+                x0_wp[vel_ids] - initial_x[vel_ids],
+                y0_wp[vel_ids] - initial_y[vel_ids],
+                z_wp[vel_ids] - initial_z[vel_ids]
+            ], dim=1)
+            dir_to_gate = dir_to_gate / (torch.linalg.norm(dir_to_gate, dim=1, keepdim=True) + 1e-8)
+            default_root_state[vel_ids, 7:10] = dir_to_gate * speed.unsqueeze(1)
         # TODO ----- END -----
 
         # Handle play mode initial position
@@ -368,6 +496,8 @@ class DefaultQuadcopterStrategy:
             self.env._desired_pos_w[env_ids, :2] - self.env._robot.data.root_link_pos_w[env_ids, :2], dim=1
         )
         self.env._n_gates_passed[env_ids] = 0
+        # Use 0 since super()._reset_idx() will reset episode_length_buf to 0
+        self._lap_start_step[env_ids] = 0
 
         # Write state to simulation
         self.env._robot.write_root_link_pose_to_sim(default_root_state[:, :7], env_ids)
