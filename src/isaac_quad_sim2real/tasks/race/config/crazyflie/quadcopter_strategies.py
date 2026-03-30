@@ -51,6 +51,14 @@ class DefaultQuadcopterStrategy:
         # Success rate tracking: rolling window of episode outcomes
         self._episode_successes = deque(maxlen=100)  # 1 = completed 3 laps, 0 = did not
 
+        # Gate 3 pre-entry: pulled toward Gate 2 for tighter loop
+        # x=0.0 (midpoint), y=1.0 (closer than 1.5), z=1.2 (elevated for smooth descent from apex)
+        self._gate3_pre_entry = torch.tensor([0.0, 1.0, 1.2], device=self.device)
+
+        # Gate 3 powerloop: 3-phase guide (apex → pre-entry → center)
+        self._powerloop_apex = torch.tensor([0.0, -0.3, 1.6], device=self.device)
+        self._powerloop_phase = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+
         # Domain randomization: only during training so TA's fixed params are preserved during eval
         if self.cfg.is_train:
             self._randomize_dynamics(torch.arange(self.num_envs, device=self.device))
@@ -152,10 +160,61 @@ class DefaultQuadcopterStrategy:
         self.env._n_gates_passed[ids_gate_passed] += 1
         self.env._desired_pos_w[ids_gate_passed] = self.env._waypoints[self.env._idx_wp[ids_gate_passed], :3]
         self.env._prev_x_drone_wrt_gate = curr_x.clone()
+        # Fix: recompute prev_x for gate-passing envs in NEW target gate frame
+        if len(ids_gate_passed) > 0:
+            new_pose, _ = subtract_frame_transforms(
+                self.env._waypoints[self.env._idx_wp[ids_gate_passed], :3],
+                self.env._waypoints_quat[self.env._idx_wp[ids_gate_passed], :],
+                self.env._robot.data.root_link_pos_w[ids_gate_passed]
+            )
+            self.env._prev_x_drone_wrt_gate[ids_gate_passed] = new_pose[:, 0]
         gate_pass = gate_passed.float()
         # Reset cooldown timer for envs that just passed a gate
         if len(ids_gate_passed) > 0:
             self._steps_since_gate_pass[ids_gate_passed] = 0
+
+        # --- Gate 3 powerloop: 3-phase guide ---
+        # Phase 0: climb to apex [0, -0.3, 2.5]
+        # Phase 1: descend to pre-entry [0.625, 1.5, 0.75] (+y side)
+        # Phase 2: approach gate center (default _desired_pos_w, no redirect)
+        targeting_gate3 = (self.env._idx_wp == 3)
+        if targeting_gate3.any():
+            g3_ids = torch.where(targeting_gate3)[0]
+            drone_z = self.env._robot.data.root_link_pos_w[g3_ids, 2]
+            drone_pos = self.env._robot.data.root_link_pos_w[g3_ids]
+
+            # Phase 0 → 1: climbed above z=1.3 OR close to apex (<0.8m)
+            phase0 = (self._powerloop_phase[g3_ids] == 0)
+            dist_to_apex = torch.linalg.norm(self._powerloop_apex - drone_pos[phase0], dim=1) if phase0.any() else torch.tensor([], device=self.device)
+            promote_0to1 = phase0.clone()
+            if phase0.any():
+                promote_0to1[phase0] = (drone_z[phase0] > 1.3) | (dist_to_apex < 0.8)
+            if promote_0to1.any():
+                self._powerloop_phase[g3_ids[promote_0to1]] = 1
+
+            # Phase 1 → 2: close to pre-entry (<1.0m)
+            phase1 = (self._powerloop_phase[g3_ids] == 1)
+            if phase1.any():
+                dist_to_pre = torch.linalg.norm(
+                    self._gate3_pre_entry - drone_pos[phase1], dim=1
+                )
+                promote_1to2 = dist_to_pre < 1.0
+                if promote_1to2.any():
+                    p1_ids = g3_ids[phase1]
+                    self._powerloop_phase[p1_ids[promote_1to2]] = 2
+
+            # Apply targets based on current phase
+            still_phase0 = (self._powerloop_phase[g3_ids] == 0)
+            if still_phase0.any():
+                self.env._desired_pos_w[g3_ids[still_phase0]] = self._powerloop_apex.unsqueeze(0)
+            still_phase1 = (self._powerloop_phase[g3_ids] == 1)
+            if still_phase1.any():
+                self.env._desired_pos_w[g3_ids[still_phase1]] = self._gate3_pre_entry.unsqueeze(0)
+            # Phase 2: no redirect, uses default gate center
+
+        # Reset powerloop phase on gate pass
+        if len(ids_gate_passed) > 0:
+            self._powerloop_phase[ids_gate_passed] = 0
 
         # --- Lap time tracking ---
         if len(ids_gate_passed) > 0:
@@ -188,7 +247,7 @@ class DefaultQuadcopterStrategy:
         direction_to_gate = direction_to_gate / (torch.linalg.norm(direction_to_gate, dim=1, keepdim=True) + 1e-8)
         drone_vel_w = self.env._robot.data.root_com_lin_vel_w
         vel_toward_gate = torch.sum(drone_vel_w * direction_to_gate, dim=1)  # dot product
-        vel_toward_gate = vel_toward_gate.clamp(-2.0, 5.0)  # cap to avoid outliers
+        vel_toward_gate = vel_toward_gate.clamp(-2.0, 8.0)  # cap to avoid outliers
 
         # --- Orientation penalty ---
         # Penalize excessive tilt (large roll/pitch)
@@ -535,6 +594,8 @@ class DefaultQuadcopterStrategy:
         # Reset wrong-side cooldown
         if hasattr(self, '_steps_since_gate_pass'):
             self._steps_since_gate_pass[env_ids] = 999
+        # Reset powerloop phase
+        self._powerloop_phase[env_ids] = 0
 
         # Write state to simulation
         self.env._robot.write_root_link_pose_to_sim(default_root_state[:, :7], env_ids)
@@ -550,6 +611,11 @@ class DefaultQuadcopterStrategy:
         )
 
         # Initialize _last_distance_to_goal AFTER new pose is written, using 3D distance
+        # For gate 3 targets, align desired_pos with powerloop phase 0 (apex)
+        gate3_mask = (waypoint_indices == 3) if not isinstance(waypoint_indices, int) else False
+        if isinstance(gate3_mask, torch.Tensor) and gate3_mask.any():
+            g3_reset_ids = env_ids[gate3_mask]
+            self.env._desired_pos_w[g3_reset_ids] = self._powerloop_apex.unsqueeze(0)
         self.env._last_distance_to_goal[env_ids] = torch.linalg.norm(
             self.env._desired_pos_w[env_ids] - self.env._robot.data.root_link_pos_w[env_ids], dim=1
         )

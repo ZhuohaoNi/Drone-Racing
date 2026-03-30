@@ -2,14 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
-## [V12] - 2026-03-30
+
+## [V16] - 2026-03-30
 
 ### Changed
-- **Minimal observation improvement** (26 → 31 dims), reward/reset unchanged from V11:
-  - `quat_w` (4) → `gravity_b` (3): gravity vector in body frame
-  - Added `next_next_gate_pos_b` (3): 2-gate lookahead
-  - Added `next_gate_normal_b` (3): next gate entry direction in body frame
-  - Current gate normal kept in world frame (unchanged from V11)
+- **Speed tuning (stabilized)**: vel_toward_gate 7→8, vel clamp 7→8 (10 caused collapse)
+- **Bigger actor network**: [128, 128] → [256, 256] for more policy capacity
+- **PPO improvements**: epochs 5→8, entropy_coef 0.0→0.005 (prevents collapse)
+- **Lower apex**: `[0, -0.3, 2.0]` → `[0, -0.3, 1.6]`, z threshold 1.5 → 1.3
+
+### Experiment Results
+- **3 laps in 17.78s** ✅ — 2.6s faster than V15, powerloop + speed tuning working
+
+## [V15] - 2026-03-30
+
+### Changed
+- **Speed tuning**: vel_toward_gate 5→7, orientation -2→-1, smoothness -0.5→-0.2, vel clamp 5→7
+- **Tighter powerloop**:
+  - Apex lowered: `[0, -0.3, 2.5]` → `[0, -0.3, 2.0]`
+  - Pre-entry pulled toward Gate 2: `[0.625, 1.5, 0.75]` → `[0.0, 1.0, 1.2]`
+  - Phase 0→1 z threshold: 1.8 → 1.5
+
+### Experiment Results
+- **3 laps in 20.38s** ✅ — powerloop + speed tuning, 1.2s faster than V14
+
+## [V14] - 2026-03-30
+
+### Added
+- **Gate 3 powerloop: 3-phase guide** — only Gate 3 affected, all others unchanged:
+  - Phase 0: target apex `[0, -0.3, 2.5]` (climb) → transitions when z>1.8 or dist<0.8m
+  - Phase 1: target pre-entry `[0.625, 1.5, 0.75]` (+y entry side) → transitions when dist<1.0m
+  - Phase 2: target gate center (default)
+- Recompute `_prev_x_drone_wrt_gate` in NEW gate frame after gate pass (fix wrong-side false positives)
+- Reset gate3 `_desired_pos_w` to apex on spawn (consistent `_last_distance_to_goal`)
+
+### Experiment Results
+- **3 laps in 21.6s** ✅ — successfully executes powerloop at Gate 3 (flies over double gate)
 
 ## [V13] - 2026-03-30
 
@@ -21,6 +49,17 @@ All notable changes to this project will be documented in this file.
 
 ### Experiment Results
 - **3 laps in 19.96s** ✅ — stable, no wrong-side violations, side-detour at double gate
+
+## [V12] - 2026-03-30
+
+### Changed
+- **Minimal observation improvement** (26 → 31 dims), reward/reset unchanged from V11:
+  - `quat_w` (4) → `gravity_b` (3): gravity vector in body frame
+  - Added `next_next_gate_pos_b` (3): 2-gate lookahead
+  - Added `next_gate_normal_b` (3): next gate entry direction in body frame
+  - Current gate normal kept in world frame (unchanged from V11)
+
+
 ## [V11] - 2026-03-29
 
 ### Added
