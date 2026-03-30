@@ -25,16 +25,6 @@ cd "$(dirname "$0")/../.."
 # Export PYTHONPATH to include the project root so Python can find the 'src' module
 export PYTHONPATH="$(pwd):$PYTHONPATH"
 
-# # Run the evaluation script
-# python scripts/rsl_rl/play_race.py \
-#     --task Isaac-Quadcopter-Race-v0 \
-#     --num_envs 1 \
-#     --load_run "$RUN_DIR" \
-#     --checkpoint best_model.pt \
-#     --headless \
-#     --video \
-#     --video_length 1600 \
-    
 # Run the evaluation script
 python scripts/rsl_rl/play_race.py \
     --task Isaac-Quadcopter-Race-v0 \
@@ -44,7 +34,17 @@ python scripts/rsl_rl/play_race.py \
     --headless \
     --video \
     --video_length 1600 \
-    --follow_robot 0
+    
+# # Run the evaluation script
+# python scripts/rsl_rl/play_race.py \
+#     --task Isaac-Quadcopter-Race-v0 \
+#     --num_envs 1 \
+#     --load_run "$RUN_DIR" \
+#     --checkpoint best_model.pt \
+#     --headless \
+#     --video \
+#     --video_length 1600 \
+#     --follow_robot 0
 
 # # Run the evaluation script
 # python scripts/rsl_rl/play_race.py \

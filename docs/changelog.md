@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [V19] - 2026-03-31
+
+### Changed
+- **Racing-line velocity reward** — blend `vel_toward_current` (6/8) + `vel_toward_next` (2/8), applied only to non-powerloop gates:
+  - `idx_wp == 2` (approach) and `idx_wp == 3` (powerloop) both use pure `vel_toward_current` (weight = 1.0), fully preserving existing Gate 3 behavior.
+  - All other gates: `vel_toward_gate = (6/8) * vel_toward_current + (2/8) * vel_toward_next`.
+  - Pre-normalized (weights sum to 1) so effective scale relative to `vel_toward_gate_reward_scale` (8.0) is unchanged.
+- **Motivation**: the 2/8 next-gate component biases approach trajectories toward the inside corner of bend gates (e.g. Gate 0, Gate 5), encouraging natural racing-line corner clipping without manual waypoint tuning.
+- **Extra WandB diagnostics**: `Episode_Reward/vel_current_mean` and `Episode_Reward/vel_next_mean` logged separately to monitor component balance.
+
+### Experiment Results
+- **3 laps in 17.56s** ✅ — 0.22s faster than V18 (17.78s); `vel_current_mean` ~150 vs `vel_next_mean` ~60, next-gate component not dominating.
+- **Late-training instability** observed around step 2.5k: `success_rate_3lap` drops sharply before partially recovering. Likely entropy collapse (`entropy_coef=0.005` may be insufficient at this stage). Flagged for next experiment.
+
+
+## [V18] - 2026-03-31
+
+### Changed
+- **Gate 3 Powerloop**: Retained 3-phase (apex, pre-entry, offset center). Reverted apex to `[0.0, -0.3, 1.6]` and pre-entry to `[0.0, 1.0, 1.2]` (identical to V16) but added Phase 2 offset gate center target `[0.425, 0.0, 0.75]` to shift the drone towards Gate 4 without losing the Gate 3 trigger.
+- **Training Robustness (Crucial Fix)**: Added 10% chance of spawning near the ground `[z=0.05]` with 0 initial velocity during training resets. This simulates the exact evaluation condition used by TAs and prevents the drone from instantly crashing on the floor during `play`.
+- **Gamma**: Reverted back to 0.99 (from 0.995) after observing training instability/collapse in V17.
+
+## [V17] - 2026-03-31
+
+### Changed
+- **2-phase powerloop** (removed pre-entry) — apex `[-0.3, -0.3, 1.6]` → exit target `[0.9, -0.2, 0.75]`
+  - Apex shifted toward Gate 2 for better loop entry
+  - Exit target offset toward Gate 4 for racing line (no center detour)
+- **gamma**: 0.99 → 0.995 (longer horizon planning)
 
 ## [V16] - 2026-03-30
 

@@ -51,12 +51,14 @@ class DefaultQuadcopterStrategy:
         # Success rate tracking: rolling window of episode outcomes
         self._episode_successes = deque(maxlen=100)  # 1 = completed 3 laps, 0 = did not
 
-        # Gate 3 pre-entry: pulled toward Gate 2 for tighter loop
-        # x=0.0 (midpoint), y=1.0 (closer than 1.5), z=1.2 (elevated for smooth descent from apex)
-        self._gate3_pre_entry = torch.tensor([0.0, 1.0, 1.2], device=self.device)
-
-        # Gate 3 powerloop: 3-phase guide (apex → pre-entry → center)
+        # Gate 3 powerloop: 2-phase guide (apex → pre-entry)
+        # Apex above double gate, slightly toward Gate 2 (x=-0.625)
         self._powerloop_apex = torch.tensor([0.0, -0.3, 1.6], device=self.device)
+        # Pre-entry: on +y entry side, slightly offset toward Gate 4 direction
+        # Not at gate center — gives drone room to set up exit angle
+        self._gate3_pre_entry = torch.tensor([0.0, 1.0, 1.2], device=self.device)
+        # Phase 2 offset target: shifted from gate center toward Gate 4
+        self._gate3_offset_center = torch.tensor([0.425, 0.0, 0.75], device=self.device)
         self._powerloop_phase = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         # Domain randomization: only during training so TA's fixed params are preserved during eval
@@ -174,16 +176,13 @@ class DefaultQuadcopterStrategy:
             self._steps_since_gate_pass[ids_gate_passed] = 0
 
         # --- Gate 3 powerloop: 3-phase guide ---
-        # Phase 0: climb to apex [0, -0.3, 2.5]
-        # Phase 1: descend to pre-entry [0.625, 1.5, 0.75] (+y side)
-        # Phase 2: approach gate center (default _desired_pos_w, no redirect)
         targeting_gate3 = (self.env._idx_wp == 3)
         if targeting_gate3.any():
             g3_ids = torch.where(targeting_gate3)[0]
             drone_z = self.env._robot.data.root_link_pos_w[g3_ids, 2]
             drone_pos = self.env._robot.data.root_link_pos_w[g3_ids]
 
-            # Phase 0 → 1: climbed above z=1.3 OR close to apex (<0.8m)
+            # Phase 0 → 1:
             phase0 = (self._powerloop_phase[g3_ids] == 0)
             dist_to_apex = torch.linalg.norm(self._powerloop_apex - drone_pos[phase0], dim=1) if phase0.any() else torch.tensor([], device=self.device)
             promote_0to1 = phase0.clone()
@@ -210,7 +209,9 @@ class DefaultQuadcopterStrategy:
             still_phase1 = (self._powerloop_phase[g3_ids] == 1)
             if still_phase1.any():
                 self.env._desired_pos_w[g3_ids[still_phase1]] = self._gate3_pre_entry.unsqueeze(0)
-            # Phase 2: no redirect, uses default gate center
+            still_phase2 = (self._powerloop_phase[g3_ids] == 2)
+            if still_phase2.any():
+                self.env._desired_pos_w[g3_ids[still_phase2]] = self._gate3_offset_center.unsqueeze(0)
 
         # Reset powerloop phase on gate pass
         if len(ids_gate_passed) > 0:
@@ -243,11 +244,31 @@ class DefaultQuadcopterStrategy:
         self.env._last_distance_to_goal = current_distance.clone()
 
         # --- Velocity toward gate reward ---
+        # Gate 3 (powerloop): keep pointing at powerloop virtual target (apex/pre-entry/offset center)
+        # All other gates: blend vel_toward_current (scale weight 5) + vel_toward_next (scale weight 3)
+        # to encourage racing-line corner clipping. The reward scales in train_race.py apply to the
+        # final combined value, so we pre-normalize the blend to keep the effective scale comparable.
+        drone_vel_w = self.env._robot.data.root_com_lin_vel_w
+
+        # Vel toward current target (desired_pos_w, which for Gate 3 is the powerloop virtual target)
         direction_to_gate = self.env._desired_pos_w - self.env._robot.data.root_link_pos_w
         direction_to_gate = direction_to_gate / (torch.linalg.norm(direction_to_gate, dim=1, keepdim=True) + 1e-8)
-        drone_vel_w = self.env._robot.data.root_com_lin_vel_w
-        vel_toward_gate = torch.sum(drone_vel_w * direction_to_gate, dim=1)  # dot product
-        vel_toward_gate = vel_toward_gate.clamp(-2.0, 8.0)  # cap to avoid outliers
+        vel_toward_current = torch.sum(drone_vel_w * direction_to_gate, dim=1).clamp(-2.0, 8.0)
+
+        # Vel toward next gate center (for racing-line bias)
+        next_gate_idx_rew = (self.env._idx_wp + 1) % num_gates
+        next_gate_pos_w_rew = self.env._waypoints[next_gate_idx_rew, :3]  # (num_envs, 3)
+        direction_to_next = next_gate_pos_w_rew - self.env._robot.data.root_link_pos_w
+        direction_to_next = direction_to_next / (torch.linalg.norm(direction_to_next, dim=1, keepdim=True) + 1e-8)
+        vel_toward_next = torch.sum(drone_vel_w * direction_to_next, dim=1).clamp(-2.0, 8.0)
+
+        # Gates 2 & 3: preserve existing powerloop behavior (only vel_toward_current, weight=1.0)
+        # - idx_wp==3 is the active powerloop phase, idx_wp==2 is the approach segment before it
+        # Other gates: blend 6/8 current + 2/8 next to encourage corner-clipping racing lines
+        is_powerloop_segment = (self.env._idx_wp == 2) | (self.env._idx_wp == 3)
+        blend_current = torch.where(is_powerloop_segment, vel_toward_current, (6.0 / 8.0) * vel_toward_current)
+        blend_next    = torch.where(is_powerloop_segment, torch.zeros_like(vel_toward_next), (2.0 / 8.0) * vel_toward_next)
+        vel_toward_gate = blend_current + blend_next
 
         # --- Orientation penalty ---
         # Penalize excessive tilt (large roll/pitch)
@@ -283,6 +304,13 @@ class DefaultQuadcopterStrategy:
             # Logging
             for key, value in rewards.items():
                 self._episode_sums[key] += value
+            # Extra diagnostics: track raw vel_current and vel_next separately
+            # (logged as Episode_Reward/vel_current_mean and vel_next_mean in wandb)
+            if "vel_current_mean" not in self._episode_sums:
+                self._episode_sums["vel_current_mean"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+                self._episode_sums["vel_next_mean"]    = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            self._episode_sums["vel_current_mean"] += vel_toward_current
+            self._episode_sums["vel_next_mean"]    += vel_toward_next
         else:
             reward = torch.zeros(self.num_envs, device=self.device)
             # TODO ----- END -----
@@ -507,7 +535,13 @@ class DefaultQuadcopterStrategy:
         y_rot = sin_theta * x_local + cos_theta * y_local
         initial_x = x0_wp - x_rot
         initial_y = y0_wp - y_rot
-        initial_z = (z_wp + z_local).clamp(min=0.15)  # ensure above ground
+        initial_z = (z_wp + z_local).clamp(min=0.15)  # ensure above ground default
+        
+        # --- 10% ground-level spawns (z=0.05) to mimic TA evaluation ---
+        ground_spawn_mask = torch.rand(n_reset, device=self.device) < 0.1
+        if ground_spawn_mask.any():
+            ground_ids = torch.where(ground_spawn_mask)[0]
+            initial_z[ground_ids] = 0.05
 
         # Override mid-track spawn positions with interpolated positions
         if mid_track_mask.any():
@@ -519,6 +553,13 @@ class DefaultQuadcopterStrategy:
             initial_x[mid_ids] = mid_pos[:, 0]
             initial_y[mid_ids] = mid_pos[:, 1]
             initial_z[mid_ids] = mid_pos[:, 2].clamp(min=0.15)
+
+        # --- 10% Ground takeoff spawns to mimic exact TA evaluation conditions --
+        ground_takeoff_mask = torch.rand(n_reset, device=self.device) < 0.1
+        ground_takeoff_mask = ground_takeoff_mask & (~mid_track_mask)
+        if ground_takeoff_mask.any():
+            g_ids = torch.where(ground_takeoff_mask)[0]
+            initial_z[g_ids] = 0.05
 
         default_root_state[:, 0] = initial_x
         default_root_state[:, 1] = initial_y
@@ -536,6 +577,8 @@ class DefaultQuadcopterStrategy:
 
         # --- 50% velocity-initialized spawns: initial velocity along forward direction ---
         vel_init_mask = torch.rand(n_reset, device=self.device) < 0.5
+        # Ensure ground takeoff spawns have 0 initial velocity
+        vel_init_mask = vel_init_mask & (~ground_takeoff_mask)
         if vel_init_mask.any():
             vel_ids = torch.where(vel_init_mask)[0]
             speed = torch.empty(len(vel_ids), device=self.device).uniform_(0.5, 3.0)
