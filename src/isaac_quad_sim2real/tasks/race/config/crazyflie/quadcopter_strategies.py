@@ -132,17 +132,30 @@ class DefaultQuadcopterStrategy:
         gate_passed = crossed_plane & within_bounds
         ids_gate_passed = torch.where(gate_passed)[0]
 
-        # --- Wrong-side crossing detection (terminate episode) ---
+        # --- Wrong-side crossing detection with cooldown ---
         wrong_side_crossed = (prev_x < 0) & (curr_x >= 0) & within_bounds
-        wrong_side_ids = torch.where(wrong_side_crossed)[0]
+        # Cooldown: skip first 5 steps after gate pass (0.1s at 50Hz — enough to clear gate)
+        if not hasattr(self, '_steps_since_gate_pass'):
+            self._steps_since_gate_pass = torch.full((self.num_envs,), 999, dtype=torch.long, device=self.device)
+        self._steps_since_gate_pass += 1
+        cooldown_ok = (self._steps_since_gate_pass > 5)
+        wrong_side_valid = wrong_side_crossed & cooldown_ok
+        wrong_side_ids = torch.where(wrong_side_valid)[0]
         if len(wrong_side_ids) > 0:
-            self.env._crashed[wrong_side_ids] = 200  # triggers termination via _crashed > 100
+            self.env._crashed[wrong_side_ids] = 200
+        # Track wrong-direction count for logging
+        if not hasattr(self, '_wrong_side_count'):
+            self._wrong_side_count = 0
+        self._wrong_side_count += len(wrong_side_ids)
 
         self.env._idx_wp[ids_gate_passed] = (self.env._idx_wp[ids_gate_passed] + 1) % num_gates
         self.env._n_gates_passed[ids_gate_passed] += 1
         self.env._desired_pos_w[ids_gate_passed] = self.env._waypoints[self.env._idx_wp[ids_gate_passed], :3]
         self.env._prev_x_drone_wrt_gate = curr_x.clone()
         gate_pass = gate_passed.float()
+        # Reset cooldown timer for envs that just passed a gate
+        if len(ids_gate_passed) > 0:
+            self._steps_since_gate_pass[ids_gate_passed] = 0
 
         # --- Lap time tracking ---
         if len(ids_gate_passed) > 0:
@@ -218,7 +231,7 @@ class DefaultQuadcopterStrategy:
         return reward
 
     def get_observations(self) -> Dict[str, torch.Tensor]:
-        """26-dim ego-centric observation: body velocities, quaternion, gate-relative positions, gate normal, yaw error, gate index, prev actions."""
+        """31-dim observation: V11 base + gravity_b, next_next_gate, next_gate_normal_b."""
 
         # TODO ----- START ----- Define tensors for your observation space. Be careful with frame transformations
         num_gates = self.env._waypoints.shape[0]
@@ -227,57 +240,78 @@ class DefaultQuadcopterStrategy:
         drone_lin_vel_b = self.env._robot.data.root_com_lin_vel_b       # (num_envs, 3)
         drone_ang_vel_b = self.env._robot.data.root_ang_vel_b           # (num_envs, 3)
 
-        # Orientation (4 dims)
+        # Gravity vector in body frame (3 dims) — replaces quat_w (4 dims)
         drone_quat_w = self.env._robot.data.root_quat_w                 # (num_envs, 4)
+        rot_matrix = matrix_from_quat(drone_quat_w)                     # (num_envs, 3, 3)
+        gravity_w = torch.tensor([0.0, 0.0, -1.0], device=self.device)
+        gravity_b = torch.matmul(rot_matrix.transpose(1, 2), gravity_w) # (num_envs, 3)
 
-        # Current gate position relative to drone in body frame (3 dims)
+        # Gate indices
         current_gate_idx = self.env._idx_wp
+        next_gate_idx = (current_gate_idx + 1) % num_gates
+        next_next_gate_idx = (current_gate_idx + 2) % num_gates
+
+        # Current gate position in body frame (3 dims)
         current_gate_pos_w = self.env._waypoints[current_gate_idx, :3]
         gate_pos_b, _ = subtract_frame_transforms(
             self.env._robot.data.root_link_pos_w,
-            self.env._robot.data.root_quat_w,
+            drone_quat_w,
             current_gate_pos_w
         )
 
-        # Next gate position relative to drone in body frame (3 dims)
-        next_gate_idx = (current_gate_idx + 1) % num_gates
+        # Next gate position in body frame (3 dims)
         next_gate_pos_w = self.env._waypoints[next_gate_idx, :3]
         next_gate_pos_b, _ = subtract_frame_transforms(
             self.env._robot.data.root_link_pos_w,
-            self.env._robot.data.root_quat_w,
+            drone_quat_w,
             next_gate_pos_w
         )
 
-        # Current gate normal vector (3 dims)
-        gate_normal = self.env._normal_vectors[current_gate_idx]         # (num_envs, 3)
+        # Next-next gate position in body frame (3 dims) — NEW
+        nn_gate_pos_w = self.env._waypoints[next_next_gate_idx, :3]
+        nn_gate_pos_b, _ = subtract_frame_transforms(
+            self.env._robot.data.root_link_pos_w,
+            drone_quat_w,
+            nn_gate_pos_w
+        )
+
+        # Current gate normal in body frame (3 dims)
+        curr_normal_w = self.env._normal_vectors[current_gate_idx]       # (num_envs, 3)
+        curr_normal_b = torch.matmul(rot_matrix.transpose(1, 2), curr_normal_w.unsqueeze(2)).squeeze(2)
+
+        # Next gate normal in body frame (3 dims)
+        next_normal_w = self.env._normal_vectors[next_gate_idx]          # (num_envs, 3)
+        next_normal_b = torch.matmul(rot_matrix.transpose(1, 2), next_normal_w.unsqueeze(2)).squeeze(2)
 
         # Sin/cos yaw error relative to gate direction (2 dims)
         _, _, drone_yaw = euler_xyz_from_quat(drone_quat_w)
-        gate_yaw = self.env._waypoints[current_gate_idx, -1]            # gate yaw angle
+        gate_yaw = self.env._waypoints[current_gate_idx, -1]
         yaw_error = wrap_to_pi(gate_yaw - drone_yaw)
         sin_yaw_error = torch.sin(yaw_error).unsqueeze(1)               # (num_envs, 1)
         cos_yaw_error = torch.cos(yaw_error).unsqueeze(1)               # (num_envs, 1)
 
-        # Previous actions (4 dims)
-        prev_actions = self.env._previous_actions                       # (num_envs, 4)
+        # Gate index, normalized (1 dim)
+        gate_index_norm = (current_gate_idx.float() / num_gates).unsqueeze(1)
 
-        # Gate index, normalized (1 dim) — lets policy know which gate it's targeting
-        gate_index_norm = (current_gate_idx.float() / num_gates).unsqueeze(1)  # (num_envs, 1)
+        # Previous actions (4 dims)
+        prev_actions = self.env._previous_actions
         # TODO ----- END -----
 
         obs = torch.cat(
             # TODO ----- START ----- List your observation tensors here to be concatenated together
             [
-                drone_lin_vel_b,    # body linear velocity          (3)
-                drone_ang_vel_b,    # body angular velocity         (3)
-                drone_quat_w,       # orientation quaternion        (4)
-                gate_pos_b,         # current gate in body frame    (3)
-                next_gate_pos_b,    # next gate in body frame       (3)
-                gate_normal,        # current gate normal direction (3)
-                sin_yaw_error,      # sin of yaw error to gate      (1)
-                cos_yaw_error,      # cos of yaw error to gate      (1)
-                gate_index_norm,    # normalized gate index         (1)
-                prev_actions,       # previous actions              (4)
+                drone_lin_vel_b,    # body linear velocity              (3)
+                drone_ang_vel_b,    # body angular velocity             (3)
+                gravity_b,          # gravity in body frame             (3)  — was quat_w(4)
+                gate_pos_b,         # current gate in body frame        (3)
+                next_gate_pos_b,    # next gate in body frame           (3)
+                nn_gate_pos_b,      # next-next gate in body frame      (3)  — NEW
+                curr_normal_b,      # current gate normal (body frame)  (3)
+                next_normal_b,      # next gate normal (body frame)     (3)  — NEW
+                sin_yaw_error,      # sin of yaw error to gate          (1)
+                cos_yaw_error,      # cos of yaw error to gate          (1)
+                gate_index_norm,    # normalized gate index             (1)
+                prev_actions,       # previous actions                  (4)
             ],
             # TODO ----- END -----
             dim=-1,
@@ -303,6 +337,9 @@ class DefaultQuadcopterStrategy:
             extras = dict()
             extras["Episode_Termination/died"] = torch.count_nonzero(self.env.reset_terminated[env_ids]).item()
             extras["Episode_Termination/time_out"] = torch.count_nonzero(self.env.reset_time_outs[env_ids]).item()
+            if hasattr(self, '_wrong_side_count'):
+                extras["Episode_Termination/wrong_side"] = self._wrong_side_count
+                self._wrong_side_count = 0
             self.env.extras["log"].update(extras)
 
             # Track 3-lap success rate
@@ -438,18 +475,18 @@ class DefaultQuadcopterStrategy:
         )
         default_root_state[:, 3:7] = quat
 
-        # --- 20% velocity-initialized spawns: initial velocity toward gate ---
-        vel_init_mask = torch.rand(n_reset, device=self.device) < 0.2
+        # --- 50% velocity-initialized spawns: initial velocity along forward direction ---
+        vel_init_mask = torch.rand(n_reset, device=self.device) < 0.5
         if vel_init_mask.any():
             vel_ids = torch.where(vel_init_mask)[0]
-            speed = torch.empty(len(vel_ids), device=self.device).uniform_(1.0, 3.0)
-            dir_to_gate = torch.stack([
-                x0_wp[vel_ids] - initial_x[vel_ids],
-                y0_wp[vel_ids] - initial_y[vel_ids],
-                z_wp[vel_ids] - initial_z[vel_ids]
-            ], dim=1)
-            dir_to_gate = dir_to_gate / (torch.linalg.norm(dir_to_gate, dim=1, keepdim=True) + 1e-8)
-            default_root_state[vel_ids, 7:10] = dir_to_gate * speed.unsqueeze(1)
+            speed = torch.empty(len(vel_ids), device=self.device).uniform_(0.5, 3.0)
+            # Use initial_yaw forward direction (world-frame vx, vy)
+            fwd_yaw = initial_yaw[vel_ids] + yaw_noise[vel_ids]
+            vx = speed * torch.cos(fwd_yaw)
+            vy = speed * torch.sin(fwd_yaw)
+            default_root_state[vel_ids, 7] = vx
+            default_root_state[vel_ids, 8] = vy
+            default_root_state[vel_ids, 9] = 0.0  # no initial vertical velocity
         # TODO ----- END -----
 
         # Handle play mode initial position
@@ -492,12 +529,12 @@ class DefaultQuadcopterStrategy:
         self.env._desired_pos_w[env_ids, :2] = self.env._waypoints[waypoint_indices, :2].clone()
         self.env._desired_pos_w[env_ids, 2] = self.env._waypoints[waypoint_indices, 2].clone()
 
-        self.env._last_distance_to_goal[env_ids] = torch.linalg.norm(
-            self.env._desired_pos_w[env_ids, :2] - self.env._robot.data.root_link_pos_w[env_ids, :2], dim=1
-        )
         self.env._n_gates_passed[env_ids] = 0
         # Use 0 since super()._reset_idx() will reset episode_length_buf to 0
         self._lap_start_step[env_ids] = 0
+        # Reset wrong-side cooldown
+        if hasattr(self, '_steps_since_gate_pass'):
+            self._steps_since_gate_pass[env_ids] = 999
 
         # Write state to simulation
         self.env._robot.write_root_link_pose_to_sim(default_root_state[:, :7], env_ids)
@@ -510,6 +547,11 @@ class DefaultQuadcopterStrategy:
             self.env._waypoints[self.env._idx_wp[env_ids], :3],
             self.env._waypoints_quat[self.env._idx_wp[env_ids], :],
             self.env._robot.data.root_link_state_w[env_ids, :3]
+        )
+
+        # Initialize _last_distance_to_goal AFTER new pose is written, using 3D distance
+        self.env._last_distance_to_goal[env_ids] = torch.linalg.norm(
+            self.env._desired_pos_w[env_ids] - self.env._robot.data.root_link_pos_w[env_ids], dim=1
         )
 
         self.env._prev_x_drone_wrt_gate[env_ids] = 1.0

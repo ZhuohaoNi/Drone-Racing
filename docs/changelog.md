@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [V12] - 2026-03-30
+
+### Changed
+- **Minimal observation improvement** (26 → 31 dims), reward/reset unchanged from V11:
+  - `quat_w` (4) → `gravity_b` (3): gravity vector in body frame
+  - Added `next_next_gate_pos_b` (3): 2-gate lookahead
+  - Added `next_gate_normal_b` (3): next gate entry direction in body frame
+  - Current gate normal kept in world frame (unchanged from V11)
+
+## [V13] - 2026-03-30
+
+### Changed
+- **Velocity-initialized reset** — 20% → 50%, speed 0.5–3.0 m/s, direction follows `initial_yaw` forward (world vx/vy)
+- **Current gate normal → body frame** — now both current and next gate normals are in body frame (unified obs frame)
+- **Wrong-side termination** — added 5-step cooldown after gate pass (no grace period). Logs `Episode_Termination/wrong_side` to wandb
+- **`_last_distance_to_goal` fix** — moved init after `write_root_link_pose_to_sim`, uses 3D distance instead of XY
+
+### Experiment Results
+- **3 laps in 19.96s** ✅ — stable, no wrong-side violations, side-detour at double gate
 ## [V11] - 2026-03-29
 
 ### Added

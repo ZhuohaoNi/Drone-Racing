@@ -149,6 +149,13 @@ def main():
     while simulation_app.is_running():
         # run everything in inference mode
         with torch.inference_mode():
+            # --- Save pre-step race stats (before env resets on done) ---
+            unwrapped = env.unwrapped
+            pre_step_time = unwrapped.episode_length_buf[0].item() * unwrapped.cfg.sim.dt * unwrapped.cfg.decimation
+            pre_step_gates = unwrapped._n_gates_passed[0].item()
+            num_gates = unwrapped._waypoints.shape[0]
+            pre_step_laps = pre_step_gates // num_gates
+
             # agent stepping
             actions = policy(obs)
             # env stepping
@@ -157,21 +164,19 @@ def main():
             if hasattr(obs, "get"):  # Check if it's a TensorDict
                 obs = obs["policy"]  # Extract the policy observation
 
-            # --- Live race stats ---
-            unwrapped = env.unwrapped
+            # --- Live race stats (post-step for current state) ---
             elapsed_time = unwrapped.episode_length_buf[0].item() * unwrapped.cfg.sim.dt * unwrapped.cfg.decimation
             gates = unwrapped._n_gates_passed[0].item()
-            num_gates = unwrapped._waypoints.shape[0]
             laps = gates // num_gates
             if timestep % 50 == 0:
                 print(f"[t={elapsed_time:6.2f}s] Gates: {gates:3d} | Laps: {laps}/{unwrapped.cfg.max_n_laps}")
-            # Print final summary when episode ends
+            # Print final summary when episode ends (use PRE-STEP values since env already reset)
             if dones[0]:
                 print(f"\n{'='*50}")
                 print(f"  RACE RESULT")
-                print(f"  Time:  {elapsed_time:.2f}s")
-                print(f"  Gates: {gates}")
-                print(f"  Laps:  {laps}/{unwrapped.cfg.max_n_laps}")
+                print(f"  Time:  {pre_step_time:.2f}s")
+                print(f"  Gates: {pre_step_gates}")
+                print(f"  Laps:  {pre_step_laps}/{unwrapped.cfg.max_n_laps}")
                 print(f"{'='*50}\n")
 
         if args_cli.video:

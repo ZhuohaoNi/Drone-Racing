@@ -34,3 +34,13 @@ python scripts/rsl_rl/play_race.py \
     --headless \
     --video \
     --video_length 1600
+
+# # Run the evaluation script
+# python scripts/rsl_rl/play_race.py \
+#     --task Isaac-Quadcopter-Race-v0 \
+#     --num_envs 1 \
+#     --load_run "$RUN_DIR" \
+#     --checkpoint model_2650_29922.pt \
+#     --headless \
+#     --video \
+#     --video_length 1600
