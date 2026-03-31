@@ -514,8 +514,8 @@ class DefaultQuadcopterStrategy:
         y_local = torch.empty(n_reset, device=self.device).uniform_(-1.0, 1.0)  # wider lateral noise
         z_local = torch.empty(n_reset, device=self.device).uniform_(-0.5, 0.5)  # wider vertical noise
 
-        # --- 25% mid-track spawns: between consecutive gates ---
-        mid_track_mask = torch.rand(n_reset, device=self.device) < 0.25
+        # --- 40% mid-track spawns: between consecutive gates (V26) ---
+        mid_track_mask = torch.rand(n_reset, device=self.device) < 0.40
         if mid_track_mask.any():
             mid_ids = torch.where(mid_track_mask)[0]
             next_wp = (waypoint_indices[mid_ids] + 1) % num_gates

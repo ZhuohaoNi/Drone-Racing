@@ -2,7 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
-## [V24] - 2026-03-31
+## [V26] - 2026-04-01
+
+### Changed
+- **mid-track spawn**: 25% → **40%** — targeting SR improvement for V25 (86.7%).
+- 2-phase powerloop and all other V25 settings unchanged.
+- Training: `num_envs=16384`, `max_iterations=5000`.
+
+### Experiment Results
+- **SR = 96.3%** ✅ | **Mean 3-lap time: 15.77s** 🏆 — best result to date.
+- SR recovered from V25's 86.7% back to 96.3% (even better than V23's 92.8%).
+- Speed improved: 15.77s vs V25 median 16.46s vs V23 median 16.78s.
+
+
 
 ### Changed
 - **2-phase powerloop** (V23 base restored): Gate 3 guide simplified from 3 phases to 2:
