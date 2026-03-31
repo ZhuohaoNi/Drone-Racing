@@ -34,7 +34,6 @@ python scripts/rsl_rl/play_race.py \
     --headless \
     --video \
     --video_length 1600 \
-    --follow_robot 0
     
 # # Run the evaluation script
 # python scripts/rsl_rl/play_race.py \

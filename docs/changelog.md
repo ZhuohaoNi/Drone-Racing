@@ -2,13 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [V24] - 2026-03-31
+
+### Changed
+- **2-phase powerloop** (V23 base restored): Gate 3 guide simplified from 3 phases to 2:
+  - Phase 0: apex `[0.0, -0.3, 1.6]` (climb & loop) → triggers when `z > 1.3m` OR `dist_to_apex < 0.8m`
+  - Phase 1: `offset_center [0.425, 0.0, 0.75]` (descend directly into Gate 3)
+  - `pre_entry [0.0, 1.0, 1.2]` removed — eliminates the +y detour before Gate 3, reducing powerloop transit time.
+- `gate3_offset_center` reverted to `z=0.75` (V23 actual value confirmed by git).
+- All other V23 settings preserved (vel_next 3/8, Gate 2 redirect, is_powerloop_segment = idx_wp==3 only).
+
+### Experiment Results
+- ✅ **3 laps in 17.34s** — drone takes an alternative path around the side of Gate 3 structure instead of flying through the loop. This is a valid gate pass (gate_pass detection fires correctly). Faster than V23 (17.50s) because the 2-phase direct descent is a shorter path.
+
+
+## [V25] - 2026-04-01
+
+### Changed
+- **mid-track spawn probability**: 10% → **25%** — more episodes starting from mid-track positions to improve learning of post-powerloop segments (Gate 4, 5, 6).
+- **2-phase powerloop kept** (from V24): apex → offset_center directly, no pre-entry detour. Drone uses an alternative path around Gate 3 structure which is a valid pass.
+
+### Experiment Results
+- **play.sh**: 3 laps in **17.08s** ✅
+- **Batch Eval** (1000 envs, independent 3-param DR per env, TA bounds):
+  - SR = **86.7%** (867/1000 successful)
+  - Mean: **16.69s** | Median: **16.46s** | std = 0.77s
+  - Best: **15.72s** | Worst (successful): 22.46s
+- **Observation**: SR dropped 6% vs V23. Faster distribution (median -0.32s) but less robust under extreme DR. Plan: increase mid-track to 40% in V26 to improve robustness.
+
+### Infrastructure Added
+- `scripts/rsl_rl/batch_eval_race.py`: parallel envs with independently sampled 3-param DR (TA pool). Reports 3-lap SR + time distribution.
+- `scripts/run/batch_eval.sh`: Shell wrapper. Usage: `bash batch_eval.sh <run_dir> [num_trials] [num_envs]`
+
 ## [V23] - 2026-03-31
 
 ### Changed
 - **Gate 2 vel_next restored**: `is_powerloop_segment` changed from `(idx_wp==2) | (idx_wp==3)` → `(idx_wp==3)` only. Gate 2's `vel_next` component (3/8 weight) now points toward Gate 3/apex, naturally providing an upward bias during the Gate 2 approach — complementing the Gate 2 pre-powerloop redirect (→ apex) added in V22. Gate 3's active powerloop phase still uses pure `vel_toward_current`.
 
 ### Experiment Results
-- **3 laps in 17.50s** ✅ — 0.38s faster than V22 (17.88s). Dual upward bias on Gate 2 (desired_pos_w → apex + vel_next → Gate 3) producing cleaner powerloop entry without the horizontal-pass-then-return issue from V21.
+- **3 laps in 17.50s** ✅ — 0.38s faster than V22.
+- **Batch Eval** (500 envs, 3-param DR, TA bounds):
+  - SR = **92.8%** (464/500) | Mean: 16.95s | Median: **16.78s** | std = 0.69s | Best: 16.06s
+
 
 
 ## [V22] - 2026-03-31
