@@ -2,7 +2,57 @@
 
 All notable changes to this project will be documented in this file.
 
+## [V23] - 2026-03-31
+
+### Changed
+- **Gate 2 vel_next restored**: `is_powerloop_segment` changed from `(idx_wp==2) | (idx_wp==3)` → `(idx_wp==3)` only. Gate 2's `vel_next` component (3/8 weight) now points toward Gate 3/apex, naturally providing an upward bias during the Gate 2 approach — complementing the Gate 2 pre-powerloop redirect (→ apex) added in V22. Gate 3's active powerloop phase still uses pure `vel_toward_current`.
+
+### Experiment Results
+- **3 laps in 17.50s** ✅ — 0.38s faster than V22 (17.88s). Dual upward bias on Gate 2 (desired_pos_w → apex + vel_next → Gate 3) producing cleaner powerloop entry without the horizontal-pass-then-return issue from V21.
+
+
+## [V22] - 2026-03-31
+
+
+### Changed
+- **Gate 2 pre-powerloop guide**: When `idx_wp == 2`, `desired_pos_w` is overridden to the powerloop apex `[0.0, -0.3, 1.6]` instead of Gate 2 center. The drone clips through Gate 2's opening while already climbing (gate_pass detection uses gate-frame y/z, unaffected by desired_pos_w). Fixes the "pass Gate 2 horizontally → circle back to Gate 3" pattern observed in V21.
+
+### Experiment Results
+- **3 laps in 17.88s** ✅ — training very stable (no collapses over 2.5k steps), `success_rate_3lap` ~80-85% throughout.
+- Slower than V21 (16.96s): Gate 2 redirect changes training dynamics — drone now takes a more deliberate powerloop approach vs V21's faster (if visually suboptimal) path.
+- `best_lap_time` in training converges at ~5.5s/lap (~16.5s potential), eval at 17.88s — gap suggests robustness difference or reset misalignment.
+
+## [V21] - 2026-03-31
+
+### Experiment Results
+- **3 laps in 16.96s** ✅ — 0.6s faster than V19 (17.56s).
+- **Gate 2 issue**: Drone passes Gate 2 horizontally then returns to Gate 3 instead of looping over. Fixed in V22. Which is not valid.
+
 ## [V19] - 2026-03-31
+
+
+### Changed
+- **vel_next blend**: 2/8 → **3/8** (current: 6/8 → 5/8). Same PPO config as V19 (entropy=0.005, num_steps_per_env=24) after V20 proved unstable.
+- **V20 reverted**: `entropy_coef=0.01` and `num_steps_per_env=48` both reverted — caused 3× repeated collapses vs V19's single one.
+
+## [V20] - 2026-03-31 *(REVERTED)*
+
+### Changed (reverted)
+- `entropy_coef`: 0.005 → 0.01 — caused repeated collapses at steps ~350, ~650, ~800.
+- `num_steps_per_env`: 24 → 48 — longer rollouts increased advantage variance, amplifying instability.
+
+### Experiment Results
+- Multiple `success_rate_3lap` collapses; training never stabilized. Reverted to V19 PPO params.
+
+## [V19] - 2026-03-31
+
+
+### Changed
+- **`entropy_coef`**: 0.005 → 0.01 — stronger exploration bonus to prevent the late-training entropy collapse observed in V19 (~step 2.5k `success_rate_3lap` drop).
+- **`num_steps_per_env`**: 24 → 48 — doubles rollout length from 0.48s to 0.96s at 50Hz. At 17s/lap the drone now covers a near-complete gate-to-gate segment per rollout, giving GAE cleaner advantage estimates and reducing gradient noise from truncated trajectories.
+
+## [V19] - 2026-03-31
+
 
 ### Changed
 - **Racing-line velocity reward** — blend `vel_toward_current` (6/8) + `vel_toward_next` (2/8), applied only to non-powerloop gates:

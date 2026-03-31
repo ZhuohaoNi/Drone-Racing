@@ -175,6 +175,16 @@ class DefaultQuadcopterStrategy:
         if len(ids_gate_passed) > 0:
             self._steps_since_gate_pass[ids_gate_passed] = 0
 
+        # --- Gate 2 pre-powerloop guide ---
+        # When targeting Gate 2, point toward the powerloop apex instead of Gate 2 center.
+        # The drone will naturally clip through Gate 2's opening (gate_pass checks y/z in gate frame,
+        # not desired_pos_w) while already climbing toward the apex. This prevents the
+        # "pass Gate 2 horizontally then circle back to Gate 3" pattern.
+        targeting_gate2 = (self.env._idx_wp == 2)
+        if targeting_gate2.any():
+            g2_ids = torch.where(targeting_gate2)[0]
+            self.env._desired_pos_w[g2_ids] = self._powerloop_apex.unsqueeze(0)
+
         # --- Gate 3 powerloop: 3-phase guide ---
         targeting_gate3 = (self.env._idx_wp == 3)
         if targeting_gate3.any():
@@ -216,6 +226,7 @@ class DefaultQuadcopterStrategy:
         # Reset powerloop phase on gate pass
         if len(ids_gate_passed) > 0:
             self._powerloop_phase[ids_gate_passed] = 0
+
 
         # --- Lap time tracking ---
         if len(ids_gate_passed) > 0:
@@ -262,12 +273,12 @@ class DefaultQuadcopterStrategy:
         direction_to_next = direction_to_next / (torch.linalg.norm(direction_to_next, dim=1, keepdim=True) + 1e-8)
         vel_toward_next = torch.sum(drone_vel_w * direction_to_next, dim=1).clamp(-2.0, 8.0)
 
-        # Gates 2 & 3: preserve existing powerloop behavior (only vel_toward_current, weight=1.0)
-        # - idx_wp==3 is the active powerloop phase, idx_wp==2 is the approach segment before it
-        # Other gates: blend 6/8 current + 2/8 next to encourage corner-clipping racing lines
-        is_powerloop_segment = (self.env._idx_wp == 2) | (self.env._idx_wp == 3)
-        blend_current = torch.where(is_powerloop_segment, vel_toward_current, (6.0 / 8.0) * vel_toward_current)
-        blend_next    = torch.where(is_powerloop_segment, torch.zeros_like(vel_toward_next), (2.0 / 8.0) * vel_toward_next)
+        # Gate 3 only: preserve powerloop virtual targets (apex/pre-entry/offset center).
+        # Gate 2 (approach segment) KEEPS vel_next — it points toward Gate 3 / apex direction,
+        # which naturally biases the drone upward during the Gate 2 approach.
+        is_powerloop_segment = (self.env._idx_wp == 3)
+        blend_current = torch.where(is_powerloop_segment, vel_toward_current, (5.0 / 8.0) * vel_toward_current)
+        blend_next    = torch.where(is_powerloop_segment, torch.zeros_like(vel_toward_next), (3.0 / 8.0) * vel_toward_next)
         vel_toward_gate = blend_current + blend_next
 
         # --- Orientation penalty ---
