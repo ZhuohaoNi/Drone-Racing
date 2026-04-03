@@ -10,14 +10,15 @@
 # charts (per-trial bar charts, parameter analysis, lap distribution).
 #
 # Usage:
-#   ./scripts/run/batch_eval.sh <run_dir> [num_trials] [num_envs] [max_steps]
+#   ./scripts/run/batch_eval.sh <run_dir> [num_trials] [num_envs] [max_steps] [checkpoint]
 #
 # Examples:
 #   ./scripts/run/batch_eval.sh 2026-03-31_12-00-00
 #   ./scripts/run/batch_eval.sh 2026-03-31_12-00-00 10 100 3000
+#   ./scripts/run/batch_eval.sh 2026-03-31_12-00-00 1 5000 3000 model_1000_38164.pt
 #
 # Charts are saved to:
-#   logs/rsl_rl/quadcopter_direct/<run_dir>/batch_eval/
+#   logs/rsl_rl/quadcopter_direct/<run_dir>/batch_eval/<checkpoint_name>/
 
 set -e
 
@@ -25,13 +26,18 @@ RUN_DIR=${1:-"[YYYY-MM-DD_XX-XX-XX]"}
 NUM_TRIALS=${2:-10}
 NUM_ENVS=${3:-100}
 MAX_STEPS=${4:-3000}
+CHECKPOINT=${5:-best_model.pt}
 
 if [ "$RUN_DIR" == "[YYYY-MM-DD_XX-XX-XX]" ]; then
     echo "ERROR: No run directory provided!"
-    echo "Usage: ./scripts/run/batch_eval.sh <run_dir> [num_trials] [num_envs] [max_steps]"
+    echo "Usage: ./scripts/run/batch_eval.sh <run_dir> [num_trials] [num_envs] [max_steps] [checkpoint]"
     echo "Example: ./scripts/run/batch_eval.sh 2026-03-31_12-00-00 10 100 3000"
+    echo "Example: ./scripts/run/batch_eval.sh 2026-03-31_12-00-00 1 5000 3000 model_1000_38164.pt"
     exit 1
 fi
+
+# Derive checkpoint name without .pt extension for output folder
+CKPT_NAME=$(basename "$CHECKPOINT" .pt)
 
 # Activate conda environment
 source ~/miniconda3/etc/profile.d/conda.sh || true
@@ -46,16 +52,19 @@ export PYTHONPATH="$(pwd):$PYTHONPATH"
 echo "========================================"
 echo "  Batch Evaluation"
 echo "  Run dir:    $RUN_DIR"
+echo "  Checkpoint: $CHECKPOINT"
 echo "  Trials:     $NUM_TRIALS"
 echo "  Envs/trial: $NUM_ENVS"
 echo "  Max steps:  $MAX_STEPS"
+echo "  Output:     .../batch_eval/$CKPT_NAME/"
 echo "========================================"
 
 python scripts/rsl_rl/batch_eval_race.py \
     --task Isaac-Quadcopter-Race-v0 \
     --load_run "$RUN_DIR" \
-    --checkpoint best_model.pt \
+    --checkpoint "$CHECKPOINT" \
     --headless \
     --num_trials "$NUM_TRIALS" \
     --num_envs "$NUM_ENVS" \
     --max_steps "$MAX_STEPS"
+

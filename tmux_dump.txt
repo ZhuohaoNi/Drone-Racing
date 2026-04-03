@@ -1,0 +1,24 @@
+               Mean episode length: 206.02
+      Episode_Reward/progress_goal: 13.9590
+          Episode_Reward/gate_pass: 21.6905
+    Episode_Reward/vel_toward_gate: 122.4004
+        Episode_Reward/orientation: -3.9707
+         Episode_Reward/smoothness: 0.0000
+              Episode_Reward/crash: -0.0477
+   Episode_Reward/vel_current_mean: 18.4988
+      Episode_Reward/vel_next_mean: 7.7039
+          Episode_Termination/died: 82.6250
+      Episode_Termination/time_out: 0.0000
+    Episode_Termination/wrong_side: 80.8750
+             Lap/success_rate_3lap: 0.0000
+                 Lap/mean_lap_time: 6.0857
+                  Lap/min_lap_time: 5.6600
+                 Lap/best_lap_time: 5.3400
+                Lap/laps_completed: 7.7391
+--------------------------------------------------------------------------------
+                   Total timesteps: 572915712
+                    Iteration time: 2.14s
+                        Total time: 3155.98s
+                               ETA: 7676.6s
+
+

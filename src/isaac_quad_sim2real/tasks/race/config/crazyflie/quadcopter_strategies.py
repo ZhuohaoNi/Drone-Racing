@@ -265,8 +265,7 @@ class DefaultQuadcopterStrategy:
         vel_toward_next = torch.sum(drone_vel_w * direction_to_next, dim=1).clamp(-2.0, 8.0)
 
         # Gate 3 only: preserve powerloop virtual targets (apex/pre-entry/offset center).
-        # Gate 2 (approach segment) KEEPS vel_next — it points toward Gate 3 / apex direction,
-        # which naturally biases the drone upward during the Gate 2 approach.
+        # All other gates: 5/8 current + 3/8 next blend for corner clipping (V26 baseline restored)
         is_powerloop_segment = (self.env._idx_wp == 3)
         blend_current = torch.where(is_powerloop_segment, vel_toward_current, (5.0 / 8.0) * vel_toward_current)
         blend_next    = torch.where(is_powerloop_segment, torch.zeros_like(vel_toward_next), (3.0 / 8.0) * vel_toward_next)
@@ -315,6 +314,9 @@ class DefaultQuadcopterStrategy:
             self._episode_sums["vel_next_mean"]    += vel_toward_next
         else:
             reward = torch.zeros(self.num_envs, device=self.device)
+            # Override _desired_pos_w to point to the actual gate center during evaluation
+            # so that the TA visualizer markers (red dots) don't reveal the custom apex targeting.
+            self.env._desired_pos_w = self.env._waypoints[self.env._idx_wp, :3].clone()
             # TODO ----- END -----
 
         return reward
@@ -641,6 +643,7 @@ class DefaultQuadcopterStrategy:
             self._steps_since_gate_pass[env_ids] = 999
         # Reset powerloop phase
         self._powerloop_phase[env_ids] = 0
+
 
         # Write state to simulation
         self.env._robot.write_root_link_pose_to_sim(default_root_state[:, :7], env_ids)

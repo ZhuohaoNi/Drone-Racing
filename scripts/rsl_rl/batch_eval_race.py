@@ -56,6 +56,7 @@ if os.path.exists(local_rsl_path):
     print(f"[INFO] Using local rsl_rl from: {local_rsl_path}")
 
 import argparse, time, json, random
+from scipy import stats
 
 from isaaclab.app import AppLauncher
 import cli_args  # isort: skip
@@ -250,10 +251,18 @@ def run_trial(env, policy, env_param_values: dict, max_steps: int, trial_label: 
     - After each step(), we also reapply env_param_values because reset_idx()
       (called for crashed/timed-out envs) calls _randomize_dynamics() which
       overwrites our per-env params.
+
+    IMPORTANT: env.reset() is called at the start of each trial to clear
+    _n_gates_passed from the previous trial. Without this, T2+ would see
+    n_gates_passed >= target from T1 and instantly mark all envs as done.
+    After reset, we reapply per-env DR params because reset_idx overwrites them.
     """
-    obs = env.get_observations()
+    # Force-reset all envs to clear _n_gates_passed (and episode_length_buf) from previous trial
+    obs, _ = env.reset()
     if hasattr(obs, "get"):
         obs = obs["policy"]
+    # Reapply per-env DR params (reset_idx's _randomize_dynamics() just overwrote them)
+    apply_per_env_params(env.unwrapped, env_param_values)
 
     unwrapped  = env.unwrapped
     num_envs   = unwrapped.num_envs
@@ -269,7 +278,7 @@ def run_trial(env, policy, env_param_values: dict, max_steps: int, trial_label: 
 
     t0 = time.time()
     for step in range(max_steps):
-        with torch.inference_mode():
+        with torch.no_grad():  # no_grad (not inference_mode) avoids marking tensors as inference tensors
             # ── Pre-step: snapshot gates before step resets done envs ────────
             pre_gates = unwrapped._n_gates_passed.clone()
             pre_time  = unwrapped.episode_length_buf.float() * dt
@@ -324,6 +333,43 @@ def run_trial(env, policy, env_param_values: dict, max_steps: int, trial_label: 
         "laps":     final_laps.cpu().numpy(),
         "finished": finished.cpu().numpy(),
     }
+
+
+# ── P-test analysis ───────────────────────────────────────────────────────────
+TARGET_TIME = 16.06  # TA benchmark time to beat
+
+
+def compute_p_test(success_times, target=TARGET_TIME):
+    """Compute probability that a random sample beats the target time.
+
+    Returns dict with:
+      - empirical_p:  fraction of samples < target
+      - ttest_p:      one-sample t-test p-value (H0: mean >= target)
+      - mean, std, n: sample statistics
+    """
+    result = {"target": target}
+    if len(success_times) == 0:
+        result.update({"empirical_p": 0.0, "ttest_p": 1.0, "mean": None, "std": None, "n": 0})
+        return result
+
+    arr = np.asarray(success_times)
+    n = len(arr)
+    result["n"] = n
+    result["mean"] = float(arr.mean())
+    result["std"] = float(arr.std(ddof=1)) if n > 1 else 0.0
+
+    # Empirical: what fraction of runs beat the target?
+    result["empirical_p"] = float((arr < target).mean())
+
+    # One-sample t-test: H0: mu >= target vs H1: mu < target (one-sided, left)
+    if n > 1 and result["std"] > 0:
+        t_stat, two_sided_p = stats.ttest_1samp(arr, target)
+        # one-sided: P(mean < target)
+        result["ttest_p"] = float(two_sided_p / 2) if t_stat < 0 else float(1 - two_sided_p / 2)
+    else:
+        result["ttest_p"] = float(arr[0] < target) if n == 1 else 1.0
+
+    return result
 
 
 # ── Charts ────────────────────────────────────────────────────────────────────
@@ -390,9 +436,15 @@ def build_charts(trial_results, out_dir, num_envs):
         ax.set_ylabel("# Environments", color=PALETTE["text"])
         ax.legend(facecolor=PALETTE["card"], edgecolor=PALETTE["grid"],
                   labelcolor=PALETTE["text"], fontsize=10)
+        # P-test analysis
+        ptest = compute_p_test(success_times)
+        ax.axvline(TARGET_TIME, color=PALETTE["fail"], lw=2.0, ls="-",
+                   label=f"Target {TARGET_TIME:.2f}s", zorder=5, alpha=0.8)
         info = (f"n = {success_count} successful / {total_eps} total   SR = {overall_sr:.1f}%\n"
                 f"mean = {mean_t:.2f}s   std = {std_t:.2f}s\n"
-                f"best = {success_times.min():.2f}s   worst = {success_times.max():.2f}s")
+                f"best = {success_times.min():.2f}s   worst = {success_times.max():.2f}s\n"
+                f"P(time < {TARGET_TIME}s) = {ptest['empirical_p']*100:.1f}%  "
+                f"(t-test p = {ptest['ttest_p']:.4f})")
         ax.text(0.97, 0.97, info, transform=ax.transAxes, fontsize=9,
                 va="top", ha="right", color=PALETTE["text"],
                 bbox=dict(boxstyle="round,pad=0.4", facecolor=PALETTE["card"],
@@ -510,9 +562,12 @@ def main():
     log_root = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
     resume_path = get_checkpoint_path(log_root, agent_cfg.load_run, agent_cfg.load_checkpoint)
     log_dir  = os.path.dirname(resume_path)
-    out_dir  = args_cli.output_dir or os.path.join(log_dir, "batch_eval")
+    # Use checkpoint name (without .pt) as subfolder for per-checkpoint comparison
+    ckpt_name = os.path.splitext(os.path.basename(resume_path))[0]
+    out_dir  = args_cli.output_dir or os.path.join(log_dir, "batch_eval", ckpt_name)
 
     print(f"[INFO] Model: {resume_path}")
+    print(f"[INFO] Checkpoint: {ckpt_name}")
     print(f"[INFO] Output: {out_dir}")
 
     # ── Init environment ──────────────────────────────────────────────────────
@@ -584,17 +639,28 @@ def main():
         # Run
         raw = run_trial(env, policy, param_values, args_cli.max_steps, f"T{t_idx+1}")
 
-        laps_arr = raw["laps"]
-        time_arr = raw["time"]
+        laps_arr  = raw["laps"]
+        time_arr  = raw["time"]
+        gates_arr = raw["gates"]
         success_mask = laps_arr >= 3
         success_rate = float(success_mask.mean() * 100)
         mean_t = float(time_arr[success_mask].mean()) if success_mask.any() else float("nan")
+
+        # Extra-gate detection: clean 3-lap = exactly 3*num_gates passes.
+        # If drone goes backward through a gate, gates_passed > target.
+        num_gates_track = env.unwrapped._waypoints.shape[0]
+        target_gates    = 3 * num_gates_track
+        extra_gates_arr = gates_arr[success_mask].astype(int) - target_gates
+        mean_extra = float(extra_gates_arr.mean()) if success_mask.any() else float("nan")
+        pct_detour = float((extra_gates_arr > 0).mean() * 100) if success_mask.any() else float("nan")
 
         print(f"\n  TRIAL {t_idx+1} RESULT:")
         print(f"    3-Lap Success Rate : {success_rate:.1f}% ({success_mask.sum()}/{args_cli.num_envs})")
         if not np.isnan(mean_t):
             print(f"    Mean 3-Lap Time    : {mean_t:.2f}s")
             print(f"    Best 3-Lap Time    : {time_arr[success_mask].min():.2f}s")
+            print(f"    Mean Extra Gates   : {mean_extra:.2f}  "
+                  f"({'✅ clean' if mean_extra < 0.5 else f'⚠️ {pct_detour:.1f}% envs took detours'})")
         else:
             print(f"    Mean 3-Lap Time    : N/A (no completions)")
 
@@ -602,9 +668,12 @@ def main():
             "trial": t_idx + 1,
             "success_rate_pct": success_rate,
             "mean_3lap_time": mean_t,
-            "env_configs": env_configs,       # per-env param details
-            "raw_laps": laps_arr.tolist(),
-            "raw_time": time_arr.tolist(),
+            "mean_extra_gates": mean_extra,
+            "pct_detour_envs": pct_detour,
+            "env_configs": env_configs,
+            "raw_laps":  laps_arr.tolist(),
+            "raw_time":  time_arr.tolist(),
+            "raw_gates": gates_arr.tolist(),
             "raw_finished": raw["finished"].tolist(),
         })
 
@@ -612,6 +681,13 @@ def main():
     overall_sr   = float(np.mean([r["success_rate_pct"] for r in trial_results]))
     valid_times  = [r["mean_3lap_time"] for r in trial_results if not np.isnan(r["mean_3lap_time"])]
     overall_time = float(np.mean(valid_times)) if valid_times else float("nan")
+
+    # Pool all successful times for p-test
+    all_success_times = np.concatenate([
+        np.array(r["raw_time"])[np.array(r["raw_laps"]) >= 3]
+        for r in trial_results
+    ]) if trial_results else np.array([])
+    ptest = compute_p_test(all_success_times)
 
     print(f"\n{'#'*60}")
     print(f"  OVERALL SUMMARY")
@@ -621,6 +697,12 @@ def main():
     print(f"  Total episodes:{args_cli.num_trials * args_cli.num_envs}")
     print(f"  Overall SR:    {overall_sr:.1f}%")
     print(f"  Mean 3-lap:    " + (f"{overall_time:.2f}s" if not np.isnan(overall_time) else "N/A"))
+    print()
+    print(f"  ── P-Test (target = {TARGET_TIME}s) ──")
+    print(f"  P(time < {TARGET_TIME}s):  {ptest['empirical_p']*100:.1f}%  ({int(ptest['empirical_p']*ptest['n'])}/{ptest['n']} runs beat target)")
+    print(f"  t-test p-value:     {ptest['ttest_p']:.6f}  ({'✅ significant' if ptest['ttest_p'] < 0.05 else '❌ not significant'})")
+    if ptest['mean'] is not None:
+        print(f"  Sample mean:        {ptest['mean']:.2f}s  (target - mean = {TARGET_TIME - ptest['mean']:.2f}s)")
     print()
     for r in trial_results:
         v = "✅" if r["success_rate_pct"] >= 80 else ("⚠️ " if r["success_rate_pct"] >= 50 else "❌")
@@ -652,7 +734,18 @@ def main():
     json_path = os.path.join(out_dir, "batch_eval_results.json")
     with open(json_path, "w") as f:
         json.dump({
-            "overall": {"success_rate_pct": overall_sr, "mean_3lap_time": overall_time if not np.isnan(overall_time) else None},
+            "overall": {
+                "success_rate_pct": overall_sr,
+                "mean_3lap_time": overall_time if not np.isnan(overall_time) else None,
+                "p_test": {
+                    "target_time": ptest["target"],
+                    "empirical_p_beat_target": ptest["empirical_p"],
+                    "ttest_p_value": ptest["ttest_p"],
+                    "n_samples": ptest["n"],
+                    "sample_mean": ptest["mean"],
+                    "sample_std": ptest["std"],
+                },
+            },
             "trials": json_out},
             f, indent=2)
     print(f"[INFO] JSON → {json_path}")
