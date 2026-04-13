@@ -37,7 +37,7 @@ import csv
 from scipy.spatial.transform import Rotation as R
 
 # Import strategy class
-from .quadcopter_strategies import DefaultQuadcopterStrategy
+from .quadcopter_strategies import DefaultQuadcopterStrategy, CircleQuadcopterStrategy
 
 ##
 # Drone config
@@ -128,7 +128,7 @@ class GateModelCfg:
 @configclass
 class QuadcopterEnvCfg(DirectRLEnvCfg):
     use_wall = False
-    track_name = 'powerloop'
+    track_name = 'circle'
 
     # env
     episode_length_s = 30.0             # episode_length = episode_length_s / dt / decimation
@@ -230,7 +230,7 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     rewards = {}
 
     # Strategy class for custom rewards, observations, and resets
-    strategy_class: type[DefaultQuadcopterStrategy] = DefaultQuadcopterStrategy
+    strategy_class: type[DefaultQuadcopterStrategy] = CircleQuadcopterStrategy
 
 class QuadcopterEnv(DirectRLEnv):
     cfg: QuadcopterEnvCfg
@@ -405,6 +405,12 @@ class QuadcopterEnv(DirectRLEnv):
         #########################
 
         tracks = {
+            'circle': [
+                [ 0.0,  3.0, 0.75, 0.0, 0.0,  0.00],
+                [-1.5,  4.5, 0.75, 0.0, 0.0, -1.57],
+                [ 0.0,  6.0, 1.75, 0.0, 0.0,  3.14],
+                [ 1.5,  4.5, 0.75, 0.0, 0.0,  1.57],
+            ],
             'complex': [
                 [ 1.5,  3.5, 0.75, 0.0, 0.0, -0.7854],
                 [-1.5,  3.5, 0.75, 0.0, 0.0,  0.7854],

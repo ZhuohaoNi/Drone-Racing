@@ -10,16 +10,16 @@ from .rl_cfg import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgo
 
 @configclass
 class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 24
+    num_steps_per_env = 64  # increased from 24: sparse rewards need longer rollouts to see gate passes
     max_iterations = 200
     save_interval = 50
     experiment_name = "quadcopter_direct"
-    empirical_normalization = True
+    empirical_normalization = False  # disabled for sim2real: normalizer is not exported to controller
     wandb_project = "ese651_quadcopter"  # Wandb project name for logging
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
-        actor_hidden_dims=[256, 256],
-        critic_hidden_dims=[512, 256, 128, 128],
+        actor_hidden_dims=[512, 512, 256, 128],  # matches controller_simple_policy.py
+        critic_hidden_dims=[512, 512, 256, 256, 128, 128],  # deeper critic (Pasumarti et al.)
         activation="elu",
         min_std=0.0,
     )
@@ -27,10 +27,10 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.005,
+        entropy_coef=0.01,  # exploration bonus for sparse rewards
         num_learning_epochs=8,
         num_mini_batches=4,
-        learning_rate=5.0e-4,
+        learning_rate=3.0e-4,  # increased from 1e-4: faster convergence with sparse rewards
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,

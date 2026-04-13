@@ -13,8 +13,8 @@
 
 set -e
 
-MAX_ITERS=${1:-2000}
-NUM_ENVS=${2:-8192}
+MAX_ITERS=${1:-5000}
+NUM_ENVS=${2:-16384}
 
 # Activate the conda environment
 source ~/miniconda3/etc/profile.d/conda.sh || true
