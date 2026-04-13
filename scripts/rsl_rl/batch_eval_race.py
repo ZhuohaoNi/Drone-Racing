@@ -585,13 +585,13 @@ def main():
     env_cfg.seed = args_cli.seed
     # env requires rewards in cfg when is_train=True — set directly on cfg (same as eval_race.py)
     env_cfg.rewards = {
-        'progress_goal_reward_scale':    0.0,
         'gate_pass_reward_scale':        0.0,
-        'vel_toward_gate_reward_scale':  0.0,
-        'orientation_reward_scale':      0.0,
-        'smoothness_reward_scale':       0.0,
-        'crash_reward_scale':            0.0,
         'death_cost':                    0.0,
+        'lap_incomplete_penalty_scale':  0.0,
+        'cmd_reg_rp_scale':              0.0,
+        'cmd_reg_yaw_scale':             0.0,
+        'crash_reward_scale':            0.0,
+        'crash_contact_scale':           0.0,
     }
 
     env = gym.make(args_cli.task, cfg=env_cfg, rewards=env_cfg.rewards)

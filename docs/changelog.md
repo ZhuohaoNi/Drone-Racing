@@ -14,23 +14,24 @@ Major reward and training overhaul based on insights from two papers:
 
 Circle-V1 failed to fly in real. Two likely causes were identified: (1) dense reward shaping (progress, vel_toward_gate, orientation) encouraged sim-specific trajectories; (2) the training reset distribution did not match real deployment, which started from the ground rather than from mid-air gate approach states.
 
+**V2 first run collapsed** at ~200 iterations: gate_pass=10.0 was too weak vs continuous negative terms (cmd_reg, crash), causing the policy to prefer hovering over attempting gates. Fixed by scaling gate_pass to 200.0, adding death_cost back, replacing lap_complete bonus with per-step lap_incomplete penalty, and increasing cmd_reg to match reference values.
+
 ### Changed
 
-**Reward structure (dense → sparse)**
+**Reward structure (dense → sparse with strong gate signal)**
 
 | Reward | Circle-V1 | Circle-V2 | Reason |
 |--------|-----------|-----------|--------|
 | Progress (d_t-1 − d_t) | +20.0 | **removed** | Dense shaping constrains policy to gate-to-gate line; hurts sim2real (Pasumarti Fig.5) |
-| Gate pass | +150.0 | **+10.0** | Primary sparse signal; lower scale balances with new lap bonus |
-| Lap complete | (none) | **+50.0** | New: sparse bonus for completing full circuit |
+| Gate pass | +150.0 | **+200.0** | Strong sparse signal; must dominate continuous negative terms (ref uses 500, conservative for real) |
+| Lap incomplete penalty | (none) | **-0.05/step** | Constant per-step cost pushes policy to complete laps, not hover |
 | Vel toward gate | +1.0 | **removed** | Dense shaping; prescribes *how* to fly rather than *what* to achieve |
 | Orientation penalty | -3.0 | **removed** | Over-constrains policy; let RL discover stable attitudes |
-| Smoothness penalty | -1.5 | **removed** | Replaced by lighter cmd_reg |
-| Cmd regularization (rp) | (none) | **-0.15 × (ω_roll² + ω_pitch²)** | Light body-rate reg (Pasumarti Eq.5) |
-| Cmd regularization (yaw) | (none) | **-0.05 × ω_yaw²** | Light yaw reg (Pasumarti Eq.5) |
-| Crash (terminal) | -5.0 | **-2.0** | Terminal crash (Pasumarti Eq.6) |
-| Crash (contact) | (none) | **-0.1** | Per-step contact penalty (Pasumarti Eq.6) |
-| Death cost | -50.0 | **removed** | Folded into crash terminal penalty |
+| Smoothness penalty | -1.5 | **removed** | Replaced by cmd_reg on body rates |
+| Cmd regularization (rp) | (none) | **-1.0 × (ω_roll² + ω_pitch²)** | Body-rate reg for real-world smoothness (ref uses -1.0) |
+| Cmd regularization (yaw) | (none) | **-0.5 × ω_yaw²** | Yaw rate reg (ref uses -0.5) |
+| Crash (contact) | -5.0 | **-0.1/step** | Per-step contact penalty |
+| Death cost | -50.0 | **-100.0** | Strong death penalty prevents aggressive behavior in real |
 
 **Observation space (36-dim → 40-dim)**
 - Added previous action (4D) to observation: `[thrust, roll_rate, pitch_rate, yaw_rate]`
@@ -39,8 +40,8 @@ Circle-V1 failed to fly in real. Two likely causes were identified: (1) dense re
 
 **Reset strategy (mixed sim2real distribution)**
 - Replaced the previous air-only reset with a mixture of:
-  - **Ground / near-ground starts (30%)**: sample behind the first gate with `z ∈ [0.03, 0.06] m` to match real deployment, where the quad starts on the ground
-  - **Gate-state replay resets (up to 60% when buffer available)**: cache states observed after successful gate passes and replay them with small perturbations, following Swift's "bounded perturbation around states observed when passing gates"
+  - **Ground / near-ground starts (20%)**: sample behind the first gate with `z ∈ [0.03, 0.06] m` to match real deployment, where the quad starts on the ground
+  - **Gate-state replay resets (up to 30% when buffer available)**: cache states observed after successful gate passes and replay them with small perturbations, following Swift's "bounded perturbation around states observed when passing gates"
   - **Gate-biased geometric resets (fallback coverage)**: Beta(0.5, 0.5) interpolation between consecutive gates, with more mass near gates and less in the middle of the segment
 - Lateral noise for geometric resets: ±1.5m → ±0.3m (tighter, along perpendicular to gate-to-gate segment)
 - Vertical noise for geometric resets: ±0.5m → ±0.2m
@@ -53,7 +54,7 @@ Circle-V1 failed to fly in real. Two likely causes were identified: (1) dense re
 
 **Training hyperparameters**
 - `num_steps_per_env`: 24 → 64 (sparse rewards need longer rollouts to see gate-pass events)
-- `learning_rate`: 1e-4 → 3e-4 (faster convergence with sparse rewards)
+- `learning_rate`: 1e-4 (unchanged; 3e-4 caused instability in first V2 run)
 - `max_iterations`: 2000 → 5000 (sparse rewards need more training)
 - `entropy_coef`: 0.01 (unchanged, helps exploration with sparse rewards)
 
@@ -67,9 +68,9 @@ Circle-V1 failed to fly in real. Two likely causes were identified: (1) dense re
 ### Interpretation Guide
 Key metrics to watch during training:
 - **Episode_Reward/gate_pass**: should increase steadily — primary learning signal
-- **Episode_Reward/lap_complete**: should appear after gate_pass stabilizes
-- **Episode_Reward/cmd_reg**: should be small negative (< -0.5 is too aggressive)
-- **Reset/ground_ratio**: should be close to 0.30 during training
+- **Episode_Reward/lap_incomplete**: constant negative; offsets when gate_pass grows
+- **Episode_Reward/cmd_reg**: should be moderately negative; if too large policy is too jerky
+- **Reset/ground_ratio**: should be close to 0.20 during training
 - **Reset/replay_ratio**: should rise above 0 once successful gate passes start populating the replay buffer
 - **Lap/success_rate_3lap**: target > 80% before deploying to real
 - **Lap/mean_lap_time**: decreasing = policy getting faster

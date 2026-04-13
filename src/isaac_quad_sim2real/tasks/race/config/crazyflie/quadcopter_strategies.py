@@ -694,7 +694,7 @@ class CircleQuadcopterStrategy:
         if self.cfg.is_train and hasattr(env, 'rew'):
             self._episode_sums = {
                 key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-                for key in ["gate_pass", "lap_complete", "cmd_reg", "crash"]
+                for key in ["gate_pass", "lap_incomplete", "cmd_reg", "crash"]
             }
 
         self._lap_start_step = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -707,8 +707,8 @@ class CircleQuadcopterStrategy:
         # Swift-style reset support: cache states observed near successful gate passes
         # and replay them with small perturbations during future resets.
         self._replay_capacity = 256
-        self._replay_ratio = 0.6
-        self._ground_reset_ratio = 0.3
+        self._replay_ratio = 0.3
+        self._ground_reset_ratio = 0.2
         self._num_gates = int(self.env._waypoints.shape[0])
         self._gate_replay_root_state = torch.zeros(
             self._num_gates, self._replay_capacity, 13, dtype=torch.float, device=self.device
@@ -950,14 +950,12 @@ class CircleQuadcopterStrategy:
             self._steps_since_gate_pass[ids_gate_passed] = 0
             self._record_gate_pass_replay(ids_gate_passed)
 
-        # --- Lap completion detection ---
-        lap_complete = torch.zeros(self.num_envs, device=self.device)
+        # --- Lap time tracking ---
         if len(ids_gate_passed) > 0:
             dt = self.cfg.sim.dt * self.cfg.decimation
             gates_passed_count = self.env._n_gates_passed[ids_gate_passed]
             lap_complete_mask = (gates_passed_count > 0) & (gates_passed_count % num_gates == 0)
             lap_complete_ids = ids_gate_passed[lap_complete_mask]
-            lap_complete[lap_complete_ids] = 1.0
             if len(lap_complete_ids) > 0:
                 current_step = self.env.episode_length_buf[lap_complete_ids]
                 lap_steps = current_step - self._lap_start_step[lap_complete_ids]
@@ -969,19 +967,11 @@ class CircleQuadcopterStrategy:
                             self._best_lap_time = t
                 self._lap_start_step[lap_complete_ids] = current_step
 
-        # --- Command regularization (Pasumarti Eq.5: light body-rate penalty) ---
-        # actions: [thrust, roll_rate, pitch_rate, yaw_rate]
-        cmd_reg = (self.env._actions[:, 1] ** 2 + self.env._actions[:, 2] ** 2) * self.env.rew['cmd_reg_rp_scale'] \
-                + (self.env._actions[:, 3] ** 2) * self.env.rew['cmd_reg_yaw_scale']
-
-        # --- Crash detection (Pasumarti Eq.6: terminal + contact) ---
+        # --- Crash detection ---
         contact_forces = self.env._contact_sensor.data.net_forces_w
         in_contact = (torch.norm(contact_forces, dim=-1) > 1e-8).squeeze(1)
         mask = (self.env.episode_length_buf > 100)
         self.env._crashed = self.env._crashed + (in_contact & mask).int()
-
-        # Terminal crash vs ongoing contact
-        terminal_crash = self.env.reset_terminated.float()
         contact_penalty = in_contact.float() * mask.float()
 
         # Update _last_distance_to_goal (still needed for reset logic)
@@ -991,15 +981,22 @@ class CircleQuadcopterStrategy:
         self.env._last_distance_to_goal = current_distance.clone()
 
         if self.cfg.is_train:
-            r_gate = gate_pass * self.env.rew['gate_pass_reward_scale']
-            r_lap = lap_complete * self.env.rew['lap_complete_reward_scale']
-            r_crash = terminal_crash * self.env.rew['crash_reward_scale'] \
-                    + contact_penalty * self.env.rew['crash_contact_scale']
+            # Command regularization: body-rate² penalty for real-world smoothness
+            cmd_reg = (self.env._actions[:, 1] ** 2 + self.env._actions[:, 2] ** 2) * self.env.rew['cmd_reg_rp_scale'] \
+                    + (self.env._actions[:, 3] ** 2) * self.env.rew['cmd_reg_yaw_scale']
 
-            reward = r_gate + r_lap + cmd_reg + r_crash
+            r_gate = gate_pass * self.env.rew['gate_pass_reward_scale']
+            r_lap_incomplete = self.env.rew['lap_incomplete_penalty_scale']  # constant per-step cost
+            r_crash = contact_penalty * self.env.rew['crash_contact_scale']
+
+            reward = r_gate + r_lap_incomplete + cmd_reg + r_crash
+
+            # Death cost override on terminal episodes
+            reward = torch.where(self.env.reset_terminated,
+                                 torch.ones_like(reward) * self.env.rew['death_cost'], reward)
 
             self._episode_sums["gate_pass"] += r_gate
-            self._episode_sums["lap_complete"] += r_lap
+            self._episode_sums["lap_incomplete"] += r_lap_incomplete
             self._episode_sums["cmd_reg"] += cmd_reg
             self._episode_sums["crash"] += r_crash
         else:

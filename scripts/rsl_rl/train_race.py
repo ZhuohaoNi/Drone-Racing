@@ -106,20 +106,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_dir = os.path.join(log_root_path, log_dir)
 
     # TODO ----- START ----- Define rewards scales
-    # Circle-V2: sparse reward design inspired by Pasumarti et al. (2026)
-    # "Agile Flight Emerges from Multi-Agent Competitive Racing"
-    # Remove all dense shaping (progress, vel_toward_gate, orientation).
-    # Only gate_pass + lap_complete + light cmd regularization + crash penalty.
-    gate_pass_reward_scale = 10.0          # sparse: per-gate reward
-    lap_complete_reward_scale = 50.0       # sparse: bonus for finishing a full lap
-    cmd_reg_rp_scale = -0.15              # light roll/pitch rate² regularization (Eq.5)
-    cmd_reg_yaw_scale = -0.05            # light yaw rate² regularization (Eq.5)
+    # Circle-V2b: sparse reward with strong gate signal + real-world cmd smoothness.
+    # gate_pass must dominate continuous negative terms to prevent policy collapse.
+    gate_pass_reward_scale = 200.0         # strong sparse signal (ref uses 500, conservative for real)
+    death_cost = -100.0                    # strong death penalty to prevent aggressive behavior
+    lap_incomplete_penalty_scale = -0.05   # per-step cost: pushes policy to complete laps, not hover
+    cmd_reg_rp_scale = -1.0               # roll/pitch rate² reg (ref uses -1.0, important for real)
+    cmd_reg_yaw_scale = -0.5              # yaw rate² reg (ref uses -0.5)
     crash_reward_scale = -2.0             # terminal crash penalty
     crash_contact_scale = -0.1            # per-step contact penalty
 
     rewards = {
         'gate_pass_reward_scale': gate_pass_reward_scale,
-        'lap_complete_reward_scale': lap_complete_reward_scale,
+        'death_cost': death_cost,
+        'lap_incomplete_penalty_scale': lap_incomplete_penalty_scale,
         'cmd_reg_rp_scale': cmd_reg_rp_scale,
         'cmd_reg_yaw_scale': cmd_reg_yaw_scale,
         'crash_reward_scale': crash_reward_scale,
