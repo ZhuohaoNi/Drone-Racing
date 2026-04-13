@@ -676,12 +676,13 @@ class DefaultQuadcopterStrategy:
 class CircleQuadcopterStrategy:
     """Sim2real strategy for the Circle Track.
 
-    Observation (36-dim) exactly matches controller_simple_policy.py in the sim2real repo:
-        lin_vel_b (3) | rot_matrix_flat (9) | curr_gate_4_corners_b (12) | next_gate_4_corners_b (12)
+    Observation follows the real controller layout plus previous action:
+        lin_vel_b (3) | rot_matrix_flat (9) | curr_gate_4_corners_b (12) |
+        next_gate_4_corners_b (12) | prev_action (4)
 
-    Rewards are safety-focused: reduced velocity incentive, strong smoothness/orientation
-    penalties, wider DR ranges (2x beyond TA spec) for real-world robustness.
-    No powerloop guide, no racing-line blend, no velocity-initialized or ground spawns.
+    Rewards follow a sparse sim2real formulation. Resets mix two distributions:
+    a gate-state replay buffer populated from successful gate passes and a
+    gate-biased geometric sampler as fallback coverage.
     """
 
     def __init__(self, env: "QuadcopterEnv"):
@@ -702,6 +703,21 @@ class CircleQuadcopterStrategy:
         self._episode_successes = deque(maxlen=100)
         self._steps_since_gate_pass = torch.full((self.num_envs,), 999, dtype=torch.long, device=self.device)
         self._wrong_side_count = 0
+
+        # Swift-style reset support: cache states observed near successful gate passes
+        # and replay them with small perturbations during future resets.
+        self._replay_capacity = 256
+        self._replay_ratio = 0.6
+        self._ground_reset_ratio = 0.3
+        self._num_gates = int(self.env._waypoints.shape[0])
+        self._gate_replay_root_state = torch.zeros(
+            self._num_gates, self._replay_capacity, 13, dtype=torch.float, device=self.device
+        )
+        self._gate_replay_prev_action = torch.zeros(
+            self._num_gates, self._replay_capacity, self.cfg.action_space, dtype=torch.float, device=self.device
+        )
+        self._gate_replay_counts = torch.zeros(self._num_gates, dtype=torch.long, device=self.device)
+        self._gate_replay_ptr = torch.zeros(self._num_gates, dtype=torch.long, device=self.device)
 
         if self.cfg.is_train:
             self._randomize_dynamics(torch.arange(self.num_envs, device=self.device))
@@ -753,6 +769,140 @@ class CircleQuadcopterStrategy:
         self.env._kd_omega[env_ids, 2] = cfg.kd_omega_y
         self.env._tau_m[env_ids] = cfg.tau_m
 
+    def _record_gate_pass_replay(self, env_ids: torch.Tensor):
+        """Store states observed immediately after successful gate passes.
+
+        The cache is keyed by the next target gate, so replayed resets start from
+        states the policy actually encountered while flying toward that gate.
+        """
+        if (not self.cfg.is_train) or len(env_ids) == 0:
+            return
+
+        target_idx = self.env._idx_wp[env_ids]
+        quat_w = self.env._robot.data.root_quat_w[env_ids]
+        rot_body_to_world = matrix_from_quat(quat_w)
+        ang_vel_w = torch.bmm(
+            rot_body_to_world, self.env._robot.data.root_ang_vel_b[env_ids].unsqueeze(-1)
+        ).squeeze(-1)
+        root_state = torch.cat(
+            [
+                self.env._robot.data.root_link_pos_w[env_ids],
+                quat_w,
+                self.env._robot.data.root_com_lin_vel_w[env_ids],
+                ang_vel_w,
+            ],
+            dim=-1,
+        )
+        prev_action = self.env._previous_actions[env_ids]
+
+        for gate_idx in target_idx.unique(sorted=True).tolist():
+            gate_mask = target_idx == gate_idx
+            gate_count = int(gate_mask.sum().item())
+            if gate_count == 0:
+                continue
+
+            gate_slot = int(gate_idx)
+            write_start = int(self._gate_replay_ptr[gate_slot].item())
+            write_ids = (torch.arange(gate_count, device=self.device) + write_start) % self._replay_capacity
+            self._gate_replay_root_state[gate_slot, write_ids] = root_state[gate_mask]
+            self._gate_replay_prev_action[gate_slot, write_ids] = prev_action[gate_mask]
+            self._gate_replay_ptr[gate_slot] = (write_start + gate_count) % self._replay_capacity
+            self._gate_replay_counts[gate_slot] = min(
+                self._replay_capacity, int(self._gate_replay_counts[gate_slot].item()) + gate_count
+            )
+
+    def _sample_gate_replay_resets(
+        self,
+        env_ids: torch.Tensor,
+        target_gate_idx: torch.Tensor,
+        default_root_state: torch.Tensor,
+    ) -> torch.Tensor:
+        """Replay buffered gate states with small perturbations."""
+        if (not self.cfg.is_train) or len(env_ids) == 0:
+            return torch.zeros(len(env_ids), dtype=torch.bool, device=self.device)
+
+        available = self._gate_replay_counts[target_gate_idx] > 0
+        use_replay = available & (torch.rand(len(env_ids), device=self.device) < self._replay_ratio)
+        replay_rows = torch.where(use_replay)[0]
+        if len(replay_rows) == 0:
+            return use_replay
+
+        replay_gate_idx = target_gate_idx[replay_rows]
+        max_slots = self._gate_replay_counts[replay_gate_idx].float()
+        sampled_slots = torch.floor(torch.rand(len(replay_rows), device=self.device) * max_slots).long()
+
+        replay_root_state = self._gate_replay_root_state[replay_gate_idx, sampled_slots].clone()
+        replay_prev_action = self._gate_replay_prev_action[replay_gate_idx, sampled_slots].clone()
+
+        # Small perturbations keep resets local while preventing rote memorization.
+        replay_root_state[:, 0:2] += torch.empty(len(replay_rows), 2, device=self.device).uniform_(-0.15, 0.15)
+        replay_root_state[:, 2] = (replay_root_state[:, 2] + torch.empty(len(replay_rows), device=self.device).uniform_(-0.10, 0.10)).clamp(min=0.15)
+        replay_root_state[:, 7:10] += torch.empty(len(replay_rows), 3, device=self.device).uniform_(-0.20, 0.20)
+        replay_root_state[:, 10:13] += torch.empty(len(replay_rows), 3, device=self.device).uniform_(-0.50, 0.50)
+
+        roll, pitch, yaw = euler_xyz_from_quat(replay_root_state[:, 3:7])
+        yaw = yaw + torch.empty(len(replay_rows), device=self.device).uniform_(-0.20, 0.20)
+        replay_root_state[:, 3:7] = quat_from_euler_xyz(roll, pitch, yaw)
+
+        default_root_state[replay_rows] = replay_root_state
+        self.env._previous_actions[env_ids[replay_rows]] = replay_prev_action
+        self.env._actions[env_ids[replay_rows]] = replay_prev_action
+
+        # Align the first-step actuator state with the replayed previous action.
+        replay_wrench = torch.zeros(len(replay_rows), 4, device=self.device)
+        replay_wrench[:, 0] = ((replay_prev_action[:, 0] + 1.0) / 2.0) * self.env._robot_weight * self.env._thrust_to_weight[env_ids[replay_rows]]
+        full_actions = torch.zeros_like(self.env._actions)
+        full_actions[env_ids[replay_rows]] = replay_prev_action
+        replay_wrench[:, 1:] = self.env._get_moment_from_ctbr(full_actions)[env_ids[replay_rows]]
+        replay_motor_speeds = self.env._compute_motor_speeds(replay_wrench)
+        self.env._wrench_des[env_ids[replay_rows]] = replay_wrench
+        self.env._motor_speeds_des[env_ids[replay_rows]] = replay_motor_speeds
+        self.env._motor_speeds[env_ids[replay_rows]] = replay_motor_speeds
+
+        return use_replay
+
+    def _sample_ground_resets(
+        self,
+        default_root_state: torch.Tensor,
+        target_gate_idx: torch.Tensor,
+    ) -> torch.Tensor:
+        """Sample near-ground starts behind the initial gate for takeoff coverage."""
+        if not self.cfg.is_train:
+            return torch.zeros(len(target_gate_idx), dtype=torch.bool, device=self.device)
+
+        use_ground = torch.rand(len(target_gate_idx), device=self.device) < self._ground_reset_ratio
+        ground_rows = torch.where(use_ground)[0]
+        if len(ground_rows) == 0:
+            return use_ground
+
+        x_local = torch.empty(len(ground_rows), device=self.device).uniform_(-3.0, -0.5)
+        y_local = torch.empty(len(ground_rows), device=self.device).uniform_(-1.0, 1.0)
+        gate_idx = int(self.env._initial_wp)
+        x0_wp = self.env._waypoints[gate_idx, 0]
+        y0_wp = self.env._waypoints[gate_idx, 1]
+        theta = self.env._waypoints[gate_idx, -1]
+        cos_theta, sin_theta = torch.cos(theta), torch.sin(theta)
+        x_rot = cos_theta * x_local - sin_theta * y_local
+        y_rot = sin_theta * x_local + cos_theta * y_local
+
+        x0 = x0_wp - x_rot
+        y0 = y0_wp - y_rot
+        z0 = torch.empty(len(ground_rows), device=self.device).uniform_(0.03, 0.06)
+        yaw0 = torch.atan2(y0_wp - y0, x0_wp - x0) + torch.empty(len(ground_rows), device=self.device).uniform_(-0.15, 0.15)
+
+        default_root_state[ground_rows, 0] = x0
+        default_root_state[ground_rows, 1] = y0
+        default_root_state[ground_rows, 2] = z0
+        default_root_state[ground_rows, 7:] = 0.0
+        default_root_state[ground_rows, 3:7] = quat_from_euler_xyz(
+            torch.zeros(len(ground_rows), device=self.device),
+            torch.zeros(len(ground_rows), device=self.device),
+            yaw0,
+        )
+        target_gate_idx[ground_rows] = gate_idx
+
+        return use_ground
+
     def get_rewards(self) -> torch.Tensor:
         """Sparse rewards: gate_pass + lap_complete + light cmd_reg + crash.
 
@@ -798,6 +948,7 @@ class CircleQuadcopterStrategy:
         gate_pass = gate_passed.float()
         if len(ids_gate_passed) > 0:
             self._steps_since_gate_pass[ids_gate_passed] = 0
+            self._record_gate_pass_replay(ids_gate_passed)
 
         # --- Lap completion detection ---
         lap_complete = torch.zeros(self.num_envs, device=self.device)
@@ -917,7 +1068,7 @@ class CircleQuadcopterStrategy:
         return {"policy": obs}
 
     def reset_idx(self, env_ids: Optional[torch.Tensor]):
-        """Conservative reset: no velocity init, no ground spawns, ±1.5m lateral, 50% mid-track."""
+        """Reset from a mix of replayed successful states and gate-biased samples."""
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self.env._robot._ALL_INDICES
 
@@ -975,6 +1126,8 @@ class CircleQuadcopterStrategy:
         self.env._previous_actions[env_ids] = 0.0
         self.env._previous_yaw[env_ids] = 0.0
         self.env._motor_speeds[env_ids] = 0.0
+        self.env._motor_speeds_des[env_ids] = 0.0
+        self.env._wrench_des[env_ids] = 0.0
         self.env._previous_omega_meas[env_ids] = 0.0
         self.env._previous_omega_err[env_ids] = 0.0
         self.env._omega_err_integral[env_ids] = 0.0
@@ -1040,6 +1193,24 @@ class CircleQuadcopterStrategy:
         )
         default_root_state[:, 3:7] = quat
 
+        target_gate_idx = next_wp_indices.clone()
+
+        # Replay from previously observed successful states when available.
+        replay_mask = self._sample_gate_replay_resets(env_ids, target_gate_idx, default_root_state)
+
+        # A subset of resets starts on the ground to match real deployment.
+        ground_mask = self._sample_ground_resets(default_root_state, target_gate_idx)
+        if ground_mask.any():
+            ground_env_ids = env_ids[ground_mask]
+            self.env._actions[ground_env_ids] = 0.0
+            self.env._previous_actions[ground_env_ids] = 0.0
+            self.env._motor_speeds[ground_env_ids] = 0.0
+            self.env._motor_speeds_des[ground_env_ids] = 0.0
+            self.env._wrench_des[ground_env_ids] = 0.0
+        non_ground_rows = torch.where(~ground_mask)[0]
+        if len(non_ground_rows) > 0:
+            target_gate_idx[non_ground_rows] = next_wp_indices[non_ground_rows]
+
         # --- Play mode initial position ---
         if not self.cfg.is_train:
             x_local = torch.empty(1, device=self.device).uniform_(-3.0, -0.5)
@@ -1069,13 +1240,18 @@ class CircleQuadcopterStrategy:
 
         # --- Commit state ---
         # Target the next gate from the spawn position
-        self.env._idx_wp[env_ids] = next_wp_indices if self.cfg.is_train else waypoint_indices
+        self.env._idx_wp[env_ids] = target_gate_idx if self.cfg.is_train else waypoint_indices
         target_idx = self.env._idx_wp[env_ids]
         self.env._desired_pos_w[env_ids, :2] = self.env._waypoints[target_idx, :2].clone()
         self.env._desired_pos_w[env_ids, 2]  = self.env._waypoints[target_idx, 2].clone()
         self.env._n_gates_passed[env_ids] = 0
         self._lap_start_step[env_ids] = 0
         self._steps_since_gate_pass[env_ids] = 999
+        if self.cfg.is_train:
+            effective_replay_mask = replay_mask & (~ground_mask)
+            self.env.extras.setdefault("log", {})
+            self.env.extras["log"]["Reset/replay_ratio"] = effective_replay_mask.float().mean().item()
+            self.env.extras["log"]["Reset/ground_ratio"] = ground_mask.float().mean().item()
 
         self.env._robot.write_root_link_pose_to_sim(default_root_state[:, :7], env_ids)
         self.env._robot.write_root_com_velocity_to_sim(default_root_state[:, 7:], env_ids)

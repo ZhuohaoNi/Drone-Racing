@@ -12,7 +12,7 @@ Major reward and training overhaul based on insights from two papers:
 - Kaufmann et al. "Champion-level drone racing using deep RL" (Nature, 2023)
 - Pasumarti et al. "Agile Flight Emerges from Multi-Agent Competitive Racing" (2026)
 
-Circle-V1 failed to fly in real — root cause: dense reward shaping (progress, vel_toward_gate, orientation) caused the policy to overfit to sim-specific trajectories instead of learning robust low-level control.
+Circle-V1 failed to fly in real. Two likely causes were identified: (1) dense reward shaping (progress, vel_toward_gate, orientation) encouraged sim-specific trajectories; (2) the training reset distribution did not match real deployment, which started from the ground rather than from mid-air gate approach states.
 
 ### Changed
 
@@ -37,13 +37,15 @@ Circle-V1 failed to fly in real — root cause: dense reward shaping (progress, 
 - Helps policy infer current dynamics state (Swift uses previous action in obs)
 - Layout: `lin_vel_b(3) | rot_matrix(9) | curr_gate_corners_b(12) | next_gate_corners_b(12) | prev_action(4)`
 
-**Reset strategy (gate-biased sampling)**
-- Replaced uniform gate + linear mid-track interpolation with Beta(0.5, 0.5) gate-biased sampling
-- U-shaped distribution: more spawns near gates (critical approach phase), fewer mid-segment
-- Inspired by Swift's "bounded perturbation around states observed when passing gates"
-- Lateral noise: ±1.5m → ±0.3m (tighter, along perpendicular to gate-to-gate segment)
-- Vertical noise: ±0.5m → ±0.2m
-- Spawn target: next gate in segment (not current gate)
+**Reset strategy (mixed sim2real distribution)**
+- Replaced the previous air-only reset with a mixture of:
+  - **Ground / near-ground starts (30%)**: sample behind the first gate with `z ∈ [0.03, 0.06] m` to match real deployment, where the quad starts on the ground
+  - **Gate-state replay resets (up to 60% when buffer available)**: cache states observed after successful gate passes and replay them with small perturbations, following Swift's "bounded perturbation around states observed when passing gates"
+  - **Gate-biased geometric resets (fallback coverage)**: Beta(0.5, 0.5) interpolation between consecutive gates, with more mass near gates and less in the middle of the segment
+- Lateral noise for geometric resets: ±1.5m → ±0.3m (tighter, along perpendicular to gate-to-gate segment)
+- Vertical noise for geometric resets: ±0.5m → ±0.2m
+- Replay resets preserve `prev_action` and initialize motor state consistently to reduce first-step transients
+- Spawn target remains the next gate in the segment for air resets; ground resets target the first gate
 
 **Network architecture**
 - Actor: `[512, 512, 256, 128]` (unchanged)
@@ -67,6 +69,8 @@ Key metrics to watch during training:
 - **Episode_Reward/gate_pass**: should increase steadily — primary learning signal
 - **Episode_Reward/lap_complete**: should appear after gate_pass stabilizes
 - **Episode_Reward/cmd_reg**: should be small negative (< -0.5 is too aggressive)
+- **Reset/ground_ratio**: should be close to 0.30 during training
+- **Reset/replay_ratio**: should rise above 0 once successful gate passes start populating the replay buffer
 - **Lap/success_rate_3lap**: target > 80% before deploying to real
 - **Lap/mean_lap_time**: decreasing = policy getting faster
 - **Lap/best_lap_time**: tracks peak performance
@@ -137,4 +141,3 @@ First circle track policy trained for real-world deployment at Pennovation.
 
 ### Experiment Results
 - ⏳ Pending zero-shot evaluation at Pennovation
-
