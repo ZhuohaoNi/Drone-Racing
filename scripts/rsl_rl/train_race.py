@@ -9,6 +9,7 @@
 
 import sys
 import os
+import json
 
 local_rsl_path = os.path.abspath("src/third_parties/rsl_rl_local")
 if os.path.exists(local_rsl_path):
@@ -127,8 +128,41 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     }
     # TODO ----- END -----
 
+    if "REWARD_OVERRIDES" in os.environ:
+        try:
+            reward_overrides = json.loads(os.environ["REWARD_OVERRIDES"])
+            rewards.update(reward_overrides)
+            print(f"[INFO] Applied REWARD_OVERRIDES: {reward_overrides}")
+        except Exception as e:
+            print(f"[Warning] Failed to parse REWARD_OVERRIDES: {e}")
+
     env_cfg.is_train = True
     env_cfg.rewards = rewards
+
+    if "ENV_OVERRIDES" in os.environ:
+        try:
+            env_overrides = json.loads(os.environ["ENV_OVERRIDES"])
+            for k, v in env_overrides.items():
+                setattr(env_cfg, k, v)
+            print(f"[INFO] Applied ENV_OVERRIDES: {env_overrides}")
+        except Exception as e:
+            print(f"[Warning] Failed to parse ENV_OVERRIDES: {e}")
+
+    if "PPO_OVERRIDES" in os.environ:
+        try:
+            ppo_overrides = json.loads(os.environ["PPO_OVERRIDES"])
+            for k, v in ppo_overrides.items():
+                if hasattr(agent_cfg.algorithm, k):
+                    setattr(agent_cfg.algorithm, k, v)
+                elif hasattr(agent_cfg.policy, k):
+                    setattr(agent_cfg.policy, k, v)
+                elif hasattr(agent_cfg, k):
+                    setattr(agent_cfg, k, v)
+                else:
+                    print(f"[Warning] PPO override key '{k}' not found in agent_cfg")
+            print(f"[INFO] Applied PPO_OVERRIDES: {ppo_overrides}")
+        except Exception as e:
+            print(f"[Warning] Failed to parse PPO_OVERRIDES: {e}")
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None, rewards=rewards)

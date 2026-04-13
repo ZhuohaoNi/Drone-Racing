@@ -11,6 +11,7 @@ import torch
 import numpy as np
 from collections import deque
 from typing import TYPE_CHECKING, Dict, Optional, Tuple
+from scipy.interpolate import CubicSpline
 
 from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz, euler_xyz_from_quat, wrap_to_pi, matrix_from_quat
 
@@ -123,6 +124,7 @@ class DefaultQuadcopterStrategy:
         self.env._kd_omega[env_ids, 1] = cfg.kd_omega_rp
         self.env._kd_omega[env_ids, 2] = cfg.kd_omega_y
         self.env._tau_m[env_ids] = cfg.tau_m
+        self.env._robot_weight[env_ids] = self.env._nominal_robot_weight
 
     def get_rewards(self) -> torch.Tensor:
         """Compute rewards: progress, velocity toward gate, gate-pass bonus, crash, orientation, smoothness."""
@@ -719,13 +721,22 @@ class CircleQuadcopterStrategy:
         self._gate_replay_counts = torch.zeros(self._num_gates, dtype=torch.long, device=self.device)
         self._gate_replay_ptr = torch.zeros(self._num_gates, dtype=torch.long, device=self.device)
 
+        # Observation latency buffer: stores previous obs to simulate Vicon pipeline delay.
+        # With obs_latency_prob, some envs receive 1-step-old observations each step.
+        self._prev_obs = None  # initialized on first get_observations call
+
+        # Pre-compute reference spline through gate positions (closed loop).
+        # Used for reset position/velocity sampling when use_spline_reset=True.
+        self._build_reference_spline()
+
         if self.cfg.is_train:
             self._randomize_dynamics(torch.arange(self.num_envs, device=self.device))
         else:
             self._set_default_dynamics(torch.arange(self.num_envs, device=self.device))
 
     def _randomize_dynamics(self, env_ids: torch.Tensor):
-        """V3 DR: TWR ±15%, Aero 0.5-2.0x, PID kp/ki ±25%, kd ±35%."""
+        """V4 DR: TWR ±15%, Aero 0.5-2.0x, PID kp/ki ±25%, kd ±35%,
+        mass ±10%, motor tau 0.5-2.0x."""
         n = len(env_ids)
         cfg = self.cfg
 
@@ -749,7 +760,22 @@ class CircleQuadcopterStrategy:
         self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_y * 0.75, cfg.ki_omega_y * 1.25)
         self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_y * 0.65, cfg.kd_omega_y * 1.35)
 
-        self.env._tau_m[env_ids] = cfg.tau_m
+        # Mass randomization: ±mass_variation (default ±10%)
+        mass_var = getattr(cfg, 'mass_variation', 0.1)
+        if mass_var > 0:
+            mass_scale = torch.empty(n, device=self.device).uniform_(1.0 - mass_var, 1.0 + mass_var)
+            self.env._robot_weight[env_ids] = self.env._nominal_robot_weight * mass_scale
+        else:
+            self.env._robot_weight[env_ids] = self.env._nominal_robot_weight
+
+        # Motor time constant randomization: scale_min to scale_max (default 0.5-2.0x)
+        tau_min = getattr(cfg, 'motor_tau_scale_min', 0.5)
+        tau_max = getattr(cfg, 'motor_tau_scale_max', 2.0)
+        if tau_min < tau_max:
+            tau_scale = torch.empty(n, device=self.device).uniform_(tau_min, tau_max)
+            self.env._tau_m[env_ids] = cfg.tau_m * tau_scale.unsqueeze(1)
+        else:
+            self.env._tau_m[env_ids] = cfg.tau_m
 
     def _set_default_dynamics(self, env_ids: torch.Tensor):
         """Nominal parameter values for evaluation."""
@@ -768,6 +794,54 @@ class CircleQuadcopterStrategy:
         self.env._kd_omega[env_ids, 1] = cfg.kd_omega_rp
         self.env._kd_omega[env_ids, 2] = cfg.kd_omega_y
         self.env._tau_m[env_ids] = cfg.tau_m
+        self.env._robot_weight[env_ids] = self.env._nominal_robot_weight
+
+    def _build_reference_spline(self):
+        """Fit a periodic cubic spline through gate positions.
+
+        Pre-samples N points along the spline and stores positions, tangent
+        vectors, and the target gate index for each sample as torch tensors.
+        This is called once at init — zero runtime cost during training.
+        """
+        num_gates = self._num_gates
+        gate_pos_np = self.env._waypoints[:, :3].cpu().numpy()  # (num_gates, 3)
+
+        # Periodic spline: append first gate at end so the curve closes
+        t_gates = np.arange(num_gates + 1, dtype=np.float64)
+        pts = np.vstack([gate_pos_np, gate_pos_np[0:1]])  # (num_gates+1, 3)
+
+        cs = CubicSpline(t_gates, pts, bc_type='periodic')
+
+        # Sample densely along spline
+        n_samples = 1024
+        t_dense = np.linspace(0, num_gates, n_samples, endpoint=False)
+        pos_dense = cs(t_dense)                # (n_samples, 3)
+        tangent_dense = cs(t_dense, 1)         # first derivative → tangent
+
+        # Normalize tangent vectors
+        tangent_norms = np.linalg.norm(tangent_dense, axis=1, keepdims=True)
+        tangent_norms = np.clip(tangent_norms, 1e-6, None)
+        tangent_dense = tangent_dense / tangent_norms
+
+        # Map each sample to its target gate (the next gate in the loop).
+        # A sample at parameter t is between gate floor(t) and gate floor(t)+1,
+        # so the target is gate (floor(t)+1) % num_gates.
+        target_gate = (np.floor(t_dense).astype(int) + 1) % num_gates
+
+        # Store as torch tensors
+        self._spline_positions = torch.tensor(pos_dense, dtype=torch.float, device=self.device)
+        self._spline_tangents = torch.tensor(tangent_dense, dtype=torch.float, device=self.device)
+        self._spline_target_gate = torch.tensor(target_gate, dtype=self.env._idx_wp.dtype, device=self.device)
+
+        # Also store per-segment gate-biased sample weights (Beta distribution on
+        # within-segment fraction, more mass near gates).
+        # frac_in_segment is the fractional part of t_dense
+        frac = t_dense - np.floor(t_dense)
+        from scipy.stats import beta as beta_dist_scipy
+        # Beta(0.5, 0.5) PDF — U-shaped, peaks at 0 and 1 (near gates)
+        weights = beta_dist_scipy.pdf(np.clip(frac, 0.01, 0.99), 0.5, 0.5)
+        weights = weights / weights.sum()
+        self._spline_sample_weights = torch.tensor(weights, dtype=torch.float, device=self.device)
 
     def _record_gate_pass_replay(self, env_ids: torch.Tensor):
         """Store states observed immediately after successful gate passes.
@@ -850,7 +924,7 @@ class CircleQuadcopterStrategy:
 
         # Align the first-step actuator state with the replayed previous action.
         replay_wrench = torch.zeros(len(replay_rows), 4, device=self.device)
-        replay_wrench[:, 0] = ((replay_prev_action[:, 0] + 1.0) / 2.0) * self.env._robot_weight * self.env._thrust_to_weight[env_ids[replay_rows]]
+        replay_wrench[:, 0] = ((replay_prev_action[:, 0] + 1.0) / 2.0) * self.env._robot_weight[env_ids[replay_rows]] * self.env._thrust_to_weight[env_ids[replay_rows]]
         full_actions = torch.zeros_like(self.env._actions)
         full_actions[env_ids[replay_rows]] = replay_prev_action
         replay_wrench[:, 1:] = self.env._get_moment_from_ctbr(full_actions)[env_ids[replay_rows]]
@@ -1075,6 +1149,16 @@ class CircleQuadcopterStrategy:
             )
             obs = obs + torch.randn_like(obs) * noise_std
 
+            # Observation latency: with some probability, return 1-step-old obs
+            # to simulate Vicon pipeline delay (~10ms, i.e. ~0.5 policy steps at 50Hz).
+            obs_latency_prob = getattr(self.cfg, 'obs_latency_prob', 0.3)
+            if obs_latency_prob > 0 and self._prev_obs is not None:
+                use_stale = torch.rand(self.num_envs, 1, device=self.device) < obs_latency_prob
+                obs = torch.where(use_stale, self._prev_obs, obs)
+
+        # Always update the buffer (even during eval, for correct init)
+        self._prev_obs = obs.clone()
+
         return {"policy": obs}
 
     def reset_idx(self, env_ids: Optional[torch.Tensor]):
@@ -1152,58 +1236,91 @@ class CircleQuadcopterStrategy:
         if self.cfg.is_train:
             self._randomize_dynamics(env_ids)
 
-        # --- Spawn position (training): gate-biased sampling ---
-        # Beta(0.5, 0.5) concentrates samples near t=0 (current gate) and t=1 (next gate),
-        # with fewer samples mid-segment. This forces the policy to practice the critical
-        # gate-approach phase more often, inspired by Swift's "bounded perturbation around
-        # a state previously observed when passing this gate" reset strategy.
-        waypoint_indices = torch.randint(0, num_gates, (n_reset,), device=self.device,
-                                         dtype=self.env._idx_wp.dtype)
-        next_wp_indices = (waypoint_indices + 1) % num_gates
+        # --- Spawn position (training) ---
+        use_spline = getattr(self.cfg, 'use_spline_reset', True)
 
-        # Gate-biased interpolation: Beta(0.5, 0.5) → U-shaped, more mass near gates
-        beta_dist = torch.distributions.Beta(0.5, 0.5)
-        lerp_t = beta_dist.sample((n_reset,)).to(self.device)
+        if use_spline:
+            # Spline reset: sample from precomputed reference spline with velocity
+            # along tangent. Gate-biased weights concentrate samples near gates.
+            sample_idx = torch.multinomial(
+                self._spline_sample_weights, n_reset, replacement=True
+            )
+            spawn_pos = self._spline_positions[sample_idx]          # (n_reset, 3)
+            spawn_tangent = self._spline_tangents[sample_idx]       # (n_reset, 3)
+            target_gate_idx = self._spline_target_gate[sample_idx]  # (n_reset,)
 
-        curr_gate_pos = self.env._waypoints[waypoint_indices, :3]
-        next_gate_pos = self.env._waypoints[next_wp_indices, :3]
-        spawn_pos = (1 - lerp_t).unsqueeze(1) * curr_gate_pos + lerp_t.unsqueeze(1) * next_gate_pos
+            # Add noise perpendicular to tangent for diversity
+            lateral_noise = torch.empty(n_reset, device=self.device).uniform_(-0.3, 0.3)
+            vertical_noise = torch.empty(n_reset, device=self.device).uniform_(-0.2, 0.2)
 
-        # Add small noise for diversity
-        lateral_noise = torch.empty(n_reset, device=self.device).uniform_(-0.3, 0.3)
-        vertical_noise = torch.empty(n_reset, device=self.device).uniform_(-0.2, 0.2)
+            # Perpendicular direction in xy plane
+            tangent_xy = spawn_tangent[:, :2]
+            tangent_xy_len = torch.linalg.norm(tangent_xy, dim=1, keepdim=True).clamp(min=1e-4)
+            tangent_xy_norm = tangent_xy / tangent_xy_len
+            perp_dir = torch.stack([-tangent_xy_norm[:, 1], tangent_xy_norm[:, 0]], dim=1)
 
-        # Compute lateral direction (perpendicular to gate-to-gate segment in xy plane)
-        segment_dir = next_gate_pos - curr_gate_pos
-        segment_dir_xy = segment_dir[:, :2]
-        segment_len = torch.linalg.norm(segment_dir_xy, dim=1, keepdim=True).clamp(min=1e-4)
-        segment_dir_xy = segment_dir_xy / segment_len
-        perp_dir = torch.stack([-segment_dir_xy[:, 1], segment_dir_xy[:, 0]], dim=1)
+            initial_x = spawn_pos[:, 0] + perp_dir[:, 0] * lateral_noise
+            initial_y = spawn_pos[:, 1] + perp_dir[:, 1] * lateral_noise
+            initial_z = (spawn_pos[:, 2] + vertical_noise).clamp(min=0.15)
 
-        initial_x = spawn_pos[:, 0] + perp_dir[:, 0] * lateral_noise
-        initial_y = spawn_pos[:, 1] + perp_dir[:, 1] * lateral_noise
-        initial_z = (spawn_pos[:, 2] + vertical_noise).clamp(min=0.15)
+            default_root_state[:, 0] = initial_x
+            default_root_state[:, 1] = initial_y
+            default_root_state[:, 2] = initial_z
 
-        # Target gate for yaw: use next gate for samples near current gate (t<0.5),
-        # use current gate's next for samples near next gate (t>=0.5)
-        x0_wp = self.env._waypoints[next_wp_indices, 0]
-        y0_wp = self.env._waypoints[next_wp_indices, 1]
+            # Velocity along spline tangent (Option C: 0.5–1.5 m/s)
+            vel_min = getattr(self.cfg, 'spline_vel_min', 0.5)
+            vel_max = getattr(self.cfg, 'spline_vel_max', 1.5)
+            speed = torch.empty(n_reset, device=self.device).uniform_(vel_min, vel_max)
+            default_root_state[:, 7:10] = spawn_tangent * speed.unsqueeze(1)
+            default_root_state[:, 10:13] = 0.0  # zero angular velocity
 
-        default_root_state[:, 0] = initial_x
-        default_root_state[:, 1] = initial_y
-        default_root_state[:, 2] = initial_z
-        default_root_state[:, 7:] = 0.0  # zero initial velocity (safety for sim2real)
+            # Yaw aligned to spline tangent + noise
+            initial_yaw = torch.atan2(spawn_tangent[:, 1], spawn_tangent[:, 0])
+            yaw_noise = torch.empty(n_reset, device=self.device).uniform_(-0.3, 0.3)
+        else:
+            # Fallback: V3-style linear interpolation between gates (zero velocity)
+            waypoint_indices = torch.randint(0, num_gates, (n_reset,), device=self.device,
+                                             dtype=self.env._idx_wp.dtype)
+            next_wp_indices = (waypoint_indices + 1) % num_gates
 
-        initial_yaw = torch.atan2(y0_wp - initial_y, x0_wp - initial_x)
-        yaw_noise = torch.empty(n_reset, device=self.device).uniform_(-0.3, 0.3)
+            beta_dist = torch.distributions.Beta(0.5, 0.5)
+            lerp_t = beta_dist.sample((n_reset,)).to(self.device)
+
+            curr_gate_pos = self.env._waypoints[waypoint_indices, :3]
+            next_gate_pos = self.env._waypoints[next_wp_indices, :3]
+            spawn_pos = (1 - lerp_t).unsqueeze(1) * curr_gate_pos + lerp_t.unsqueeze(1) * next_gate_pos
+
+            lateral_noise = torch.empty(n_reset, device=self.device).uniform_(-0.3, 0.3)
+            vertical_noise = torch.empty(n_reset, device=self.device).uniform_(-0.2, 0.2)
+
+            segment_dir = next_gate_pos - curr_gate_pos
+            segment_dir_xy = segment_dir[:, :2]
+            segment_len = torch.linalg.norm(segment_dir_xy, dim=1, keepdim=True).clamp(min=1e-4)
+            segment_dir_xy = segment_dir_xy / segment_len
+            perp_dir = torch.stack([-segment_dir_xy[:, 1], segment_dir_xy[:, 0]], dim=1)
+
+            initial_x = spawn_pos[:, 0] + perp_dir[:, 0] * lateral_noise
+            initial_y = spawn_pos[:, 1] + perp_dir[:, 1] * lateral_noise
+            initial_z = (spawn_pos[:, 2] + vertical_noise).clamp(min=0.15)
+
+            x0_wp = self.env._waypoints[next_wp_indices, 0]
+            y0_wp = self.env._waypoints[next_wp_indices, 1]
+
+            default_root_state[:, 0] = initial_x
+            default_root_state[:, 1] = initial_y
+            default_root_state[:, 2] = initial_z
+            default_root_state[:, 7:] = 0.0
+
+            initial_yaw = torch.atan2(y0_wp - initial_y, x0_wp - initial_x)
+            yaw_noise = torch.empty(n_reset, device=self.device).uniform_(-0.3, 0.3)
+            target_gate_idx = next_wp_indices.clone()
+
         quat = quat_from_euler_xyz(
             torch.zeros(n_reset, device=self.device),
             torch.zeros(n_reset, device=self.device),
             initial_yaw + yaw_noise
         )
         default_root_state[:, 3:7] = quat
-
-        target_gate_idx = next_wp_indices.clone()
 
         # Replay from previously observed successful states when available.
         replay_mask = self._sample_gate_replay_resets(env_ids, target_gate_idx, default_root_state)
@@ -1217,9 +1334,12 @@ class CircleQuadcopterStrategy:
             self.env._motor_speeds[ground_env_ids] = 0.0
             self.env._motor_speeds_des[ground_env_ids] = 0.0
             self.env._wrench_des[ground_env_ids] = 0.0
-        non_ground_rows = torch.where(~ground_mask)[0]
-        if len(non_ground_rows) > 0:
-            target_gate_idx[non_ground_rows] = next_wp_indices[non_ground_rows]
+        # For non-ground, non-spline resets, restore target from next_wp_indices
+        # (ground resets override target_gate_idx internally)
+        if not use_spline:
+            non_ground_rows = torch.where(~ground_mask)[0]
+            if len(non_ground_rows) > 0:
+                target_gate_idx[non_ground_rows] = next_wp_indices[non_ground_rows]
 
         # --- Play mode initial position ---
         if not self.cfg.is_train:
@@ -1259,9 +1379,12 @@ class CircleQuadcopterStrategy:
         self._steps_since_gate_pass[env_ids] = 999
         if self.cfg.is_train:
             effective_replay_mask = replay_mask & (~ground_mask)
+            spline_mask = (~replay_mask) & (~ground_mask)
             self.env.extras.setdefault("log", {})
             self.env.extras["log"]["Reset/replay_ratio"] = effective_replay_mask.float().mean().item()
             self.env.extras["log"]["Reset/ground_ratio"] = ground_mask.float().mean().item()
+            self.env.extras["log"]["Reset/spline_ratio"] = spline_mask.float().mean().item()
+            self.env.extras["log"]["Reset/use_spline"] = float(use_spline)
 
         self.env._robot.write_root_link_pose_to_sim(default_root_state[:, :7], env_ids)
         self.env._robot.write_root_com_velocity_to_sim(default_root_state[:, 7:], env_ids)

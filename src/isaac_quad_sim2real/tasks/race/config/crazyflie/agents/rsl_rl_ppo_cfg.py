@@ -15,7 +15,7 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 50
     experiment_name = "quadcopter_direct"
     empirical_normalization = False  # disabled for sim2real: normalizer is not exported to controller
-    wandb_project = "ese651_quadcopter"  # Wandb project name for logging
+    wandb_project = "ese651_sim2real"  # Wandb project name for logging
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[512, 512, 256, 128],  # matches controller_simple_policy.py

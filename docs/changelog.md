@@ -4,6 +4,72 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Circle-V4] - 2026-04-13
+
+### Stage 2 — Spline Reset Strategy + Expanded DR
+
+V4 adds two major changes: (1) spline-based reset with velocity initialization, inspired by the champion's "Spline Hallway" strategy; (2) expanded domain randomization (mass, motor tau, obs latency).
+
+### Changed
+
+**Reset strategy: spline-based sampling + velocity init (champion's key insight)**
+
+The champion's takeaway: "the secret isn't a complex reward function; it's a robust reset strategy." Previous versions used linear interpolation between gate centers with zero velocity. V4 replaces this with:
+
+1. **Pre-compute periodic cubic spline** through gate positions at init time (scipy CubicSpline, closed loop). 1024 points + tangent vectors pre-sampled and stored as torch tensors. Zero runtime cost.
+2. **Sample spawn positions along the spline** using gate-biased weights (Beta(0.5, 0.5) PDF on within-segment fraction — more samples near gates).
+3. **Initialize velocity along spline tangent** (0.5–1.5 m/s). The drone starts in a state resembling actual flight, not hovering mid-air.
+4. **Yaw aligned to spline tangent** (not pointing at gate center).
+5. **Lateral/vertical noise** perpendicular to tangent for diversity (±0.3m lateral, ±0.2m vertical).
+
+Reset mixture (unchanged ratios):
+- 50% spline resets (position + velocity along tangent)
+- 30% gate-replay resets (preserved from V3 — real observed states with perturbation)
+- 20% ground resets (preserved from V3 — z=0.03–0.06m behind first gate)
+
+Configurable via `QuadcopterEnvCfg`:
+- `use_spline_reset` (default True, set False for V3-style linear interp)
+- `spline_vel_min` / `spline_vel_max` (default 0.5–1.5 m/s)
+
+**Domain randomization (3 new parameters)**
+
+| Parameter | V3 | V4 | Reason |
+|-----------|----|----|--------|
+| Mass | Fixed | **±10%** | Real battery weight varies; motor degradation changes effective mass |
+| Motor time constant (tau_m) | Fixed | **0.5–2.0× nominal** | Real motor response varies with wear, temperature, voltage sag |
+| Observation latency | None | **30% chance of 1-step-old obs** | Vicon pipeline has ~10ms latency independent of action delay |
+
+Configurable via `QuadcopterEnvCfg` and sweepable via `ENV_OVERRIDES`:
+- `mass_variation` (default 0.1 = ±10%, set 0 to disable)
+- `motor_tau_scale_min` / `motor_tau_scale_max` (default 0.5–2.0, set both to 1.0 to disable)
+- `obs_latency_prob` (default 0.3, set 0 to disable)
+
+**Implementation notes**
+- `_robot_weight` converted from scalar to per-env tensor for per-env mass randomization
+- `_tau_m` now randomized per-episode via scale factor (was fixed)
+- Observation latency stores previous obs and substitutes with probability during training
+- New logging: `Reset/spline_ratio`, `Reset/use_spline` in wandb
+- All new DR disabled during evaluation (nominal values used)
+
+**Sweep infrastructure (`scripts/run/sweep.py`)**
+- 12 configs total:
+  - Config 0: V4 baseline (spline + all DR)
+  - Configs 1–6: DR ablations (action delay, obs latency, mass, tau, all latency, minimal)
+  - Config 7: No spline (V3-style linear interp for A/B comparison)
+  - Config 8: Conservative spline velocity (0.2–0.8 m/s)
+  - Configs 9–11: Reward tuning (gate_pass 300, tighter cmd_reg, forgiving death_cost)
+
+### Training
+- Recommended comparison: `python scripts/run/sweep.py --config 0 7 --max-iterations 3000`
+  - Config 0 = V4 baseline (spline reset)
+  - Config 7 = same DR but V3-style linear reset (no spline)
+- This isolates the spline reset effect with all other parameters identical.
+
+### Experiment Results
+- Pending training and evaluation
+
+---
+
 ## [Circle-V3] - 2026-04-14
 
 ### Stage 2 — Training Stability & DR Calibration
