@@ -254,6 +254,19 @@ class QuadcopterEnv(DirectRLEnv):
         self._previous_actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
         self._previous_yaw = torch.zeros(self.num_envs, device=self.device)
 
+        # Action latency randomization (Swift, Kaufmann et al. 2023)
+        # Simulates real communication delay (Vicon → policy → Crazyradio → drone).
+        # Each env gets a random delay of 0-2 steps; buffer stores recent actions.
+        self._action_latency_max = 2  # max delay in policy steps (0, 1, or 2)
+        self._action_buffer = torch.zeros(
+            self._action_latency_max + 1, self.num_envs, self.cfg.action_space, device=self.device
+        )
+        self._action_delay = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        if self.cfg.is_train:
+            self._action_delay = torch.randint(
+                0, self._action_latency_max + 1, (self.num_envs,), device=self.device
+            )
+
         self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._wrench_des = torch.zeros(self.num_envs, 4, device=self.device)
@@ -629,7 +642,17 @@ class QuadcopterEnv(DirectRLEnv):
     ##########################################################
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        self._actions = actions.clone().clamp(-1.0, 1.0)    # actions come directly from the NN
+        raw_actions = actions.clone().clamp(-1.0, 1.0)
+
+        # Action latency: shift buffer forward, push new action, read delayed action
+        if self.cfg.is_train and self._action_latency_max > 0:
+            self._action_buffer = self._action_buffer.roll(1, dims=0)
+            self._action_buffer[0] = raw_actions
+            # Each env reads from its own delay slot
+            self._actions = self._action_buffer[self._action_delay, torch.arange(self.num_envs, device=self.device)]
+        else:
+            self._actions = raw_actions
+
         self._actions = self.cfg.beta * self._actions + (1 - self.cfg.beta) * self._previous_actions
 
         # Store current actions for next timestep (for action smoothing and observations)
@@ -705,6 +728,13 @@ class QuadcopterEnv(DirectRLEnv):
         """Reset specific environments using the strategy pattern."""
         # Delegate reset logic to strategy
         self.strategy.reset_idx(env_ids)
+
+        # Re-randomize action latency for reset envs
+        if self.cfg.is_train and self._action_latency_max > 0:
+            self._action_delay[env_ids] = torch.randint(
+                0, self._action_latency_max + 1, (len(env_ids),), device=self.device
+            )
+            self._action_buffer[:, env_ids] = 0.0
 
         # Call parent class reset (required for environment state)
         super()._reset_idx(env_ids)

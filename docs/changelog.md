@@ -4,6 +4,53 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Circle-V3] - 2026-04-14
+
+### Stage 2 — Training Stability & DR Calibration
+
+V2 achieved 99.9% SR in sim with 3-param DR eval, but training curves showed large periodic oscillations. Two causes identified: (1) DR ranges too extreme (aero 0.2-3.0x, kd ±50%) creating impossible dynamics that added noise; (2) too few mini-batches for sparse reward variance.
+
+### Changed
+
+**Domain randomization (tightened to realistic ranges)**
+
+| Parameter | V2 | V3 | Reason |
+|-----------|----|----|--------|
+| TWR | ±15% | ±15% | Unchanged, reasonable for Crazyflie |
+| Aero drag | 0.2–3.0× | **0.5–2.0×** | 0.2× (near-zero drag) unrealistic; 3.0× too extreme |
+| PID kp/ki | ±35% | **±25%** | Tighter, real Crazyflie PID won't deviate this far |
+| PID kd | ±50% | **±35%** | kd ±50% caused extreme angular rate behavior |
+
+**Training hyperparameters**
+
+| Parameter | V2 | V3 | Reason |
+|-----------|----|----|--------|
+| `num_mini_batches` | 4 | **8** | More mini-batches = smaller batch = more stable gradient estimates |
+| `max_iterations` | 5000 | **3000** | V2 curves plateau by ~1500 iter; remaining was wasted compute |
+
+**Observation noise (new, Swift-inspired)**
+- Added Gaussian noise to observations during training only:
+  - `lin_vel_b`: σ=0.05 m/s (Vicon velocity from numerical differentiation is noisy)
+  - `rot_matrix`: σ=0.01 (small attitude measurement noise)
+  - `gate_corners_b`: σ=0.02m (gate position calibration error)
+  - `prev_action`: no noise (known exactly)
+- Forces policy to be robust to sensor imperfections rather than relying on perfect state
+
+**Action latency randomization (new, Swift-inspired)**
+- Each env gets a random action delay of 0–2 policy steps during training
+- Simulates real communication latency: Vicon → compute → Crazyradio → Crazyflie (~10–40ms total, policy runs at 50Hz = 20ms/step)
+- Delay re-randomized on each episode reset
+- Disabled during eval (delay=0)
+
+### Training
+- `num_envs=8192`, `max_iterations=3000`, `seed=42`
+- `run_name=circle-v3-tighter-dr`
+
+### Experiment Results
+- ⏳ Pending training and zero-shot evaluation at Pennovation
+
+---
+
 ## [Circle-V2] - 2026-04-13
 
 ### Stage 2 — Circle Track Sparse Reward Redesign (Sim2Real)

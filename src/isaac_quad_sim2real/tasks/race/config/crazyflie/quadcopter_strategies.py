@@ -725,29 +725,29 @@ class CircleQuadcopterStrategy:
             self._set_default_dynamics(torch.arange(self.num_envs, device=self.device))
 
     def _randomize_dynamics(self, env_ids: torch.Tensor):
-        """Wider DR than V30 for sim2real: TWR ±15%, Aero 0.2-3.0x, PID ±35%/±50%."""
+        """V3 DR: TWR ±15%, Aero 0.5-2.0x, PID kp/ki ±25%, kd ±35%."""
         n = len(env_ids)
         cfg = self.cfg
 
         self.env._thrust_to_weight[env_ids] = torch.empty(n, device=self.device).uniform_(
             cfg.thrust_to_weight * 0.85, cfg.thrust_to_weight * 1.15)
 
-        k_xy_min, k_xy_max = cfg.k_aero_xy * 0.2, cfg.k_aero_xy * 3.0
-        k_z_min,  k_z_max  = cfg.k_aero_z  * 0.2, cfg.k_aero_z  * 3.0
+        k_xy_min, k_xy_max = cfg.k_aero_xy * 0.5, cfg.k_aero_xy * 2.0
+        k_z_min,  k_z_max  = cfg.k_aero_z  * 0.5, cfg.k_aero_z  * 2.0
         self.env._K_aero[env_ids, 0] = torch.empty(n, device=self.device).uniform_(k_xy_min, k_xy_max)
         self.env._K_aero[env_ids, 1] = torch.empty(n, device=self.device).uniform_(k_xy_min, k_xy_max)
         self.env._K_aero[env_ids, 2] = torch.empty(n, device=self.device).uniform_(k_z_min,  k_z_max)
 
-        self.env._kp_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_rp * 0.65, cfg.kp_omega_rp * 1.35)
+        self.env._kp_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_rp * 0.75, cfg.kp_omega_rp * 1.25)
         self.env._kp_omega[env_ids, 1] = self.env._kp_omega[env_ids, 0]
-        self.env._ki_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_rp * 0.65, cfg.ki_omega_rp * 1.35)
+        self.env._ki_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_rp * 0.75, cfg.ki_omega_rp * 1.25)
         self.env._ki_omega[env_ids, 1] = self.env._ki_omega[env_ids, 0]
-        self.env._kd_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_rp * 0.5, cfg.kd_omega_rp * 1.5)
+        self.env._kd_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_rp * 0.65, cfg.kd_omega_rp * 1.35)
         self.env._kd_omega[env_ids, 1] = self.env._kd_omega[env_ids, 0]
 
-        self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_y * 0.65, cfg.kp_omega_y * 1.35)
-        self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_y * 0.65, cfg.ki_omega_y * 1.35)
-        self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_y * 0.5, cfg.kd_omega_y * 1.5)
+        self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_y * 0.75, cfg.kp_omega_y * 1.25)
+        self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_y * 0.75, cfg.ki_omega_y * 1.25)
+        self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_y * 0.65, cfg.kd_omega_y * 1.35)
 
         self.env._tau_m[env_ids] = cfg.tau_m
 
@@ -1061,6 +1061,19 @@ class CircleQuadcopterStrategy:
             corners_next_b.reshape(self.num_envs, 12),          # (num_envs, 12)
             self.env._previous_actions,                         # (num_envs,  4)
         ], dim=-1)                                              # total: 40
+
+        # Observation noise for sim2real robustness (Swift, Kaufmann et al. 2023)
+        # Simulates Vicon measurement noise, velocity estimation error, and gate calibration error.
+        if self.cfg.is_train:
+            noise_std = torch.tensor(
+                [0.05] * 3          # lin_vel_b: ±0.05 m/s (Vicon velocity from numerical diff)
+                + [0.01] * 9        # rot_matrix: ±0.01 (small attitude noise)
+                + [0.02] * 12       # curr_gate_corners: ±0.02m (gate calibration)
+                + [0.02] * 12       # next_gate_corners: ±0.02m
+                + [0.0] * 4,        # prev_action: no noise (known exactly)
+                device=self.device,
+            )
+            obs = obs + torch.randn_like(obs) * noise_std
 
         return {"policy": obs}
 

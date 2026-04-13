@@ -13,7 +13,7 @@
 
 set -e
 
-MAX_ITERS=${1:-5000}
+MAX_ITERS=${1:-3000}
 NUM_ENVS=${2:-8192}
 
 # Activate the conda environment
