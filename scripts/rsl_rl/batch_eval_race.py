@@ -276,6 +276,18 @@ def run_trial(env, policy, env_param_values: dict, max_steps: int, trial_label: 
     final_laps  = torch.zeros(num_envs, dtype=torch.int,   device=unwrapped.device)
     final_gates = torch.zeros(num_envs, dtype=torch.int,   device=unwrapped.device)
 
+    # Sim2real metrics: track control signals and flight quality across all envs
+    # Running accumulators (no per-step storage to keep memory bounded)
+    sum_thrust      = torch.zeros(num_envs, device=unwrapped.device)
+    sum_thrust_sq   = torch.zeros(num_envs, device=unwrapped.device)
+    sum_body_rate   = torch.zeros(num_envs, 3, device=unwrapped.device)  # roll, pitch, yaw
+    sum_body_rate_sq = torch.zeros(num_envs, 3, device=unwrapped.device)
+    sum_action_delta = torch.zeros(num_envs, device=unwrapped.device)  # action smoothness
+    max_body_rate   = torch.zeros(num_envs, 3, device=unwrapped.device)
+    max_tilt_angle  = torch.zeros(num_envs, device=unwrapped.device)
+    step_counts     = torch.zeros(num_envs, dtype=torch.long, device=unwrapped.device)
+    prev_actions    = torch.zeros(num_envs, unwrapped.cfg.action_space, device=unwrapped.device)
+
     t0 = time.time()
     for step in range(max_steps):
         with torch.no_grad():  # no_grad (not inference_mode) avoids marking tensors as inference tensors
@@ -290,6 +302,33 @@ def run_trial(env, policy, env_param_values: dict, max_steps: int, trial_label: 
 
             # ── Reapply per-env params (reset_idx overwrites them) ───────────
             apply_per_env_params(unwrapped, env_param_values)
+
+            # ── Accumulate sim2real metrics for active (not finished) envs ───
+            active = ~finished
+            if active.any():
+                a_ids = torch.where(active)[0]
+                # Thrust: actions[:, 0] is normalized [-1, 1], mapped to [0, 1]
+                thrust_cmd = (actions[a_ids, 0] + 1.0) / 2.0
+                sum_thrust[a_ids] += thrust_cmd
+                sum_thrust_sq[a_ids] += thrust_cmd ** 2
+                # Body rates: actions[:, 1:4] are normalized [-1, 1]
+                br = actions[a_ids, 1:4]  # roll, pitch, yaw rate commands
+                sum_body_rate[a_ids] += br.abs()
+                sum_body_rate_sq[a_ids] += br ** 2
+                max_body_rate[a_ids] = torch.max(max_body_rate[a_ids], br.abs())
+                # Action smoothness: L2 norm of action change
+                sum_action_delta[a_ids] += (actions[a_ids] - prev_actions[a_ids]).norm(dim=-1)
+                # Tilt angle from gravity vector (how far from level)
+                quat = unwrapped._robot.data.root_quat_w[a_ids]  # (n, 4) wxyz
+                # z-component of body up vector in world = 2*(qw*qz + qx*qy) ... simplified:
+                # cos(tilt) = 1 - 2*(qx^2 + qy^2) for small-angle
+                qx, qy = quat[:, 1], quat[:, 2]
+                cos_tilt = 1.0 - 2.0 * (qx**2 + qy**2)
+                tilt_rad = torch.acos(cos_tilt.clamp(-1, 1))
+                max_tilt_angle[a_ids] = torch.max(max_tilt_angle[a_ids], tilt_rad)
+
+                step_counts[a_ids] += 1
+                prev_actions[a_ids] = actions[a_ids].clone()
 
             # ── Detect 3-lap completion from pre-step values ─────────────────
             newly_3lap = (~finished) & (pre_gates >= target_gates)
@@ -327,11 +366,29 @@ def run_trial(env, policy, env_param_values: dict, max_steps: int, trial_label: 
         final_gates[ids] = unwrapped._n_gates_passed[ids]
         final_laps[ids]  = final_gates[ids] // num_gates
 
+    # Compute per-env summary statistics
+    safe_counts = step_counts.float().clamp(min=1)
+    mean_thrust   = (sum_thrust / safe_counts).cpu().numpy()
+    std_thrust    = (torch.sqrt(sum_thrust_sq / safe_counts - (sum_thrust / safe_counts)**2).clamp(min=0)).cpu().numpy()
+    mean_br       = (sum_body_rate / safe_counts.unsqueeze(1)).cpu().numpy()       # (num_envs, 3)
+    rms_br        = (torch.sqrt(sum_body_rate_sq / safe_counts.unsqueeze(1))).cpu().numpy()
+    mean_smoothness = (sum_action_delta / safe_counts).cpu().numpy()
+    max_br        = max_body_rate.cpu().numpy()
+    max_tilt_deg  = (max_tilt_angle * 180.0 / 3.14159).cpu().numpy()
+
     return {
         "gates":    final_gates.cpu().numpy(),
         "time":     final_time.cpu().numpy(),
         "laps":     final_laps.cpu().numpy(),
         "finished": finished.cpu().numpy(),
+        # Sim2real metrics
+        "mean_thrust":      mean_thrust,
+        "std_thrust":       std_thrust,
+        "mean_body_rate":   mean_br,
+        "rms_body_rate":    rms_br,
+        "max_body_rate":    max_br,
+        "mean_smoothness":  mean_smoothness,
+        "max_tilt_deg":     max_tilt_deg,
     }
 
 
@@ -664,12 +721,43 @@ def main():
         else:
             print(f"    Mean 3-Lap Time    : N/A (no completions)")
 
+        # Sim2real control quality metrics (over successful envs)
+        s2r = {}
+        if success_mask.any():
+            sm = success_mask
+            s2r["mean_thrust"]     = float(raw["mean_thrust"][sm].mean())
+            s2r["std_thrust"]      = float(raw["std_thrust"][sm].mean())
+            s2r["mean_body_rate"]  = raw["mean_body_rate"][sm].mean(axis=0).tolist()   # [r, p, y]
+            s2r["rms_body_rate"]   = raw["rms_body_rate"][sm].mean(axis=0).tolist()
+            s2r["max_body_rate"]   = raw["max_body_rate"][sm].mean(axis=0).tolist()
+            s2r["mean_smoothness"] = float(raw["mean_smoothness"][sm].mean())
+            s2r["max_tilt_deg"]    = float(raw["max_tilt_deg"][sm].mean())
+            s2r["p95_tilt_deg"]    = float(np.percentile(raw["max_tilt_deg"][sm], 95))
+
+            print(f"    ── Sim2Real Readiness ──")
+            print(f"    Mean thrust cmd    : {s2r['mean_thrust']:.3f} (0=off, 1=max; hover≈0.5)")
+            print(f"    Thrust variability  : σ={s2r['std_thrust']:.3f}")
+            print(f"    Mean |body rate|    : roll={s2r['mean_body_rate'][0]:.3f}  pitch={s2r['mean_body_rate'][1]:.3f}  yaw={s2r['mean_body_rate'][2]:.3f}")
+            print(f"    RMS body rate       : roll={s2r['rms_body_rate'][0]:.3f}  pitch={s2r['rms_body_rate'][1]:.3f}  yaw={s2r['rms_body_rate'][2]:.3f}")
+            print(f"    Peak |body rate|    : roll={s2r['max_body_rate'][0]:.3f}  pitch={s2r['max_body_rate'][1]:.3f}  yaw={s2r['max_body_rate'][2]:.3f}")
+            print(f"    Action smoothness   : {s2r['mean_smoothness']:.4f}  (lower=smoother)")
+            print(f"    Max tilt (mean/p95) : {s2r['max_tilt_deg']:.1f}° / {s2r['p95_tilt_deg']:.1f}°")
+
+            # Warnings
+            if s2r['p95_tilt_deg'] > 60:
+                print(f"    ⚠️  HIGH TILT: 95th percentile > 60° — risky for real flight")
+            if max(s2r['max_body_rate']) > 0.9:
+                print(f"    ⚠️  SATURATED BODY RATE: near ±1.0 limit — policy may be too aggressive")
+            if s2r['mean_smoothness'] > 0.5:
+                print(f"    ⚠️  JERKY COMMANDS: high action delta — may cause oscillation in real")
+
         trial_results.append({
             "trial": t_idx + 1,
             "success_rate_pct": success_rate,
             "mean_3lap_time": mean_t,
             "mean_extra_gates": mean_extra,
             "pct_detour_envs": pct_detour,
+            "sim2real": s2r,
             "env_configs": env_configs,
             "raw_laps":  laps_arr.tolist(),
             "raw_time":  time_arr.tolist(),
@@ -715,6 +803,39 @@ def main():
         else "❌ Fragile under DR — needs improvement."
     )
     print(f"\n  {verdict}")
+
+    # Aggregate sim2real metrics across trials
+    s2r_trials = [r["sim2real"] for r in trial_results if r.get("sim2real")]
+    if s2r_trials:
+        print(f"\n  ── Sim2Real Readiness (pooled) ──")
+        avg_smooth = float(np.mean([s["mean_smoothness"] for s in s2r_trials]))
+        avg_tilt   = float(np.mean([s["max_tilt_deg"] for s in s2r_trials]))
+        avg_p95    = float(np.mean([s["p95_tilt_deg"] for s in s2r_trials]))
+        avg_thrust = float(np.mean([s["mean_thrust"] for s in s2r_trials]))
+        avg_rms_br = np.mean([s["rms_body_rate"] for s in s2r_trials], axis=0)
+        avg_max_br = np.mean([s["max_body_rate"] for s in s2r_trials], axis=0)
+        print(f"  Thrust:       mean={avg_thrust:.3f}")
+        print(f"  RMS body rate: R={avg_rms_br[0]:.3f} P={avg_rms_br[1]:.3f} Y={avg_rms_br[2]:.3f}")
+        print(f"  Peak body rate: R={avg_max_br[0]:.3f} P={avg_max_br[1]:.3f} Y={avg_max_br[2]:.3f}")
+        print(f"  Smoothness:   {avg_smooth:.4f}")
+        print(f"  Max tilt:     mean={avg_tilt:.1f}° p95={avg_p95:.1f}°")
+
+        # Overall sim2real verdict
+        issues = []
+        if avg_p95 > 60:
+            issues.append("high tilt (>60°)")
+        if max(avg_max_br) > 0.9:
+            issues.append("saturated body rates")
+        if avg_smooth > 0.5:
+            issues.append("jerky commands")
+        if avg_thrust < 0.3 or avg_thrust > 0.7:
+            issues.append(f"unusual thrust ({avg_thrust:.2f})")
+
+        if not issues:
+            print(f"  ✅ Control profile looks SAFE for real deployment")
+        else:
+            print(f"  ⚠️  Concerns: {', '.join(issues)}")
+
     print(f"{'#'*60}\n")
 
     # ── Save JSON ─────────────────────────────────────────────────────────────

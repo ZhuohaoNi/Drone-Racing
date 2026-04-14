@@ -107,15 +107,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_dir = os.path.join(log_root_path, log_dir)
 
     # TODO ----- START ----- Define rewards scales
-    # Circle-V2b: sparse reward with strong gate signal + real-world cmd smoothness.
+    # Sparse reward with strong gate signal + real-world cmd smoothness.
     # gate_pass must dominate continuous negative terms to prevent policy collapse.
-    gate_pass_reward_scale = 200.0         # strong sparse signal (ref uses 500, conservative for real)
-    death_cost = -100.0                    # strong death penalty to prevent aggressive behavior
-    lap_incomplete_penalty_scale = -0.05   # per-step cost: pushes policy to complete laps, not hover
-    cmd_reg_rp_scale = -1.0               # roll/pitch rate² reg (ref uses -1.0, important for real)
-    cmd_reg_yaw_scale = -0.5              # yaw rate² reg (ref uses -0.5)
-    crash_reward_scale = -2.0             # terminal crash penalty
-    crash_contact_scale = -0.1            # per-step contact penalty
+    # Values can be overridden via environment variables (e.g. REW_CMD_REG_RP=-2.0).
+    gate_pass_reward_scale = float(os.environ.get('REW_GATE_PASS', 200.0))
+    death_cost = float(os.environ.get('REW_DEATH_COST', -100.0))
+    lap_incomplete_penalty_scale = float(os.environ.get('REW_LAP_INCOMPLETE', -0.05))
+    cmd_reg_rp_scale = float(os.environ.get('REW_CMD_REG_RP', -1.0))
+    cmd_reg_yaw_scale = float(os.environ.get('REW_CMD_REG_YAW', -0.5))
+    crash_reward_scale = float(os.environ.get('REW_CRASH', -2.0))
+    crash_contact_scale = float(os.environ.get('REW_CRASH_CONTACT', -0.1))
 
     rewards = {
         'gate_pass_reward_scale': gate_pass_reward_scale,
