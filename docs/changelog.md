@@ -4,31 +4,54 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [Circle-V4] - 2026-04-14
+## [Circle-V4] - 2026-04-13
 
-### Stage 2 — Ultra-Conservative Fallback for Real Deployment
+### Stage 2 — V2-based + Spline Reset + Moderate New DR
 
-V4 is a conservative variant of V3 designed as a fallback at Pennovation. Same obs noise, action latency, and DR as V3, but with stronger command smoothness penalties and less time pressure. The idea: if V3 is too aggressive in real, V4 should fly slower but survive.
+V2 outperformed V3 in real-world testing. V4 starts from V2 as the base, keeps its wider DR ranges for existing parameters, and selectively adds V4 improvements: spline reset and moderate new DR (mass, motor tau). Action delay and observation latency are removed.
 
-Test order at Pennovation: **V4 → V3 → V2** (most conservative first).
+### Changed
 
-### Changed (relative to V3)
+**Reset strategy: spline-based sampling + velocity init (kept from prior V4 draft)**
 
-| Reward | V3 | V4 | Reason |
-|--------|----|----|--------|
-| `cmd_reg_rp_scale` | -1.0 | **-2.0** | 2x stronger roll/pitch rate penalty for smoother flight |
-| `cmd_reg_yaw_scale` | -0.5 | **-1.0** | 2x stronger yaw rate penalty |
-| `lap_incomplete_penalty` | -0.05 | **-0.02** | Less time pressure — fly slow and safe |
+1. **Pre-compute periodic cubic spline** through gate positions at init time (scipy CubicSpline, closed loop). 1024 points + tangent vectors pre-sampled and stored as torch tensors. Zero runtime cost.
+2. **Sample spawn positions along the spline** using gate-biased weights (Beta(0.5, 0.5) PDF on within-segment fraction — more samples near gates).
+3. **Initialize velocity along spline tangent** (0.5–1.5 m/s). The drone starts in a state resembling actual flight, not hovering mid-air.
+4. **Yaw aligned to spline tangent** (not pointing at gate center).
+5. **Lateral/vertical noise** perpendicular to tangent for diversity (±0.3m lateral, ±0.2m vertical).
 
-All other settings (obs noise, action latency, DR ranges, network, num_mini_batches) inherited from V3.
+Reset mixture (unchanged ratios):
+- 50% spline resets (position + velocity along tangent)
+- 30% gate-replay resets (real observed states with perturbation)
+- 20% ground resets (z=0.03–0.06m behind first gate)
+
+**Domain randomization (V2 base + 2 new moderate params)**
+
+| Parameter | V2 | V3 | V4 | Reason |
+|-----------|----|----|-----|--------|
+| TWR | ±15% | ±15% | **±15%** | Unchanged |
+| Aero drag | 0.2–3.0× | 0.5–2.0× | **0.2–3.0× (V2)** | V2's wider range performed better in real |
+| PID kp/ki | ±35% | ±25% | **±35% (V2)** | V2's wider range performed better in real |
+| PID kd | ±50% | ±35% | **±50% (V2)** | V2's wider range performed better in real |
+| Mass | Fixed | Fixed | **±5%** | New, moderate — real battery weight varies |
+| Motor tau | Fixed | Fixed | **0.7–1.3× nominal** | New, moderate — motor response varies with wear |
+| Action delay | None | 0–2 steps | **None** | Removed — not needed |
+| Obs latency | None | None | **None** | Removed |
+
+**Observation noise (kept from V3)**
+- lin_vel_b: σ=0.05 m/s, rot_matrix: σ=0.01, gate_corners: σ=0.02m, prev_action: no noise
+
+**PPO hyperparameters (reverted to V2)**
+
+| Parameter | V2 | V3 | V4 |
+|-----------|----|----|-----|
+| `num_mini_batches` | 4 | 8 | **4 (V2)** |
 
 ### Training
 - `num_envs=8192`, `max_iterations=3000`, `seed=42`
-- `run_name=circle-v4-conservative`
-- Script: `scripts/run/train_circle_v4.sh`
 
 ### Experiment Results
-- ⏳ Pending training and zero-shot evaluation at Pennovation
+- Pending training and evaluation
 
 ---
 

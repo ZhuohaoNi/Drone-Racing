@@ -37,39 +37,65 @@ PPO_DEFAULTS = {
     "gamma": 0.99,
     "lam": 0.95,
     "num_learning_epochs": 8,
-    "num_mini_batches": 8,
+    "num_mini_batches": 4,
     "entropy_coef": 0.01,
     "learning_rate": 1e-4,
 }
 
 # ---------- Environment config defaults ----------
 ENV_DEFAULTS = {
-    "action_latency_max": 2,               # V3 baseline: 0-2 step random delay
+    "action_latency_max": 0,               # V4: disabled (V2 had none)
+    "mass_variation": 0.05,                # ±5% mass randomization (moderate)
+    "motor_tau_scale_min": 0.7,            # motor time constant DR lower bound (moderate)
+    "motor_tau_scale_max": 1.3,            # motor time constant DR upper bound (moderate)
+    "obs_latency_prob": 0.0,              # V4: disabled
+    "use_spline_reset": True,              # spline-based reset with velocity init
+    "spline_vel_min": 0.5,                # min tangent velocity for spline resets (m/s)
+    "spline_vel_max": 1.5,                # max tangent velocity for spline resets (m/s)
 }
 
 # ---------- Sweep configurations ----------
 # Each entry: (name, reward_overrides, ppo_overrides, env_overrides)
 # env_overrides is optional (defaults to {}) for backward compat
 SWEEP_CONFIGS = [
-    # 0: S2R-V3 baseline
-    ("s2r_v3_baseline", {}, {}, {}),
+    # 0: V4 baseline (V2 DR ranges + spline reset + moderate mass/tau DR)
+    ("s2r_v4_baseline", {}, {}, {}),
 
-    # 1: S2R-V3 ablation — no action delay
-    ("s2r_v3_nodelay", {}, {}, {"action_latency_max": 0}),
+    # --- Ablation: DR components ---
+    # 1: No mass randomization
+    ("s2r_v4_no_mass_dr", {}, {}, {"mass_variation": 0.0}),
 
-    # 2: S2R-V3 + stronger gate_pass (test if primary objective signal matters)
-    ("s2r_v3_gate300", {
+    # 2: No motor tau randomization (fixed tau_m)
+    ("s2r_v4_no_tau_dr", {}, {}, {"motor_tau_scale_min": 1.0, "motor_tau_scale_max": 1.0}),
+
+    # 3: No new DR (no mass, no tau — pure V2 DR only)
+    ("s2r_v4_v2_dr_only", {}, {}, {
+        "mass_variation": 0.0,
+        "motor_tau_scale_min": 1.0,
+        "motor_tau_scale_max": 1.0,
+    }),
+
+    # --- Reset strategy ablation ---
+    # 4: No spline reset (V2-style linear interp, zero velocity)
+    ("s2r_v4_no_spline", {}, {}, {"use_spline_reset": False}),
+
+    # 5: Spline reset but slower velocity (more conservative)
+    ("s2r_v4_spline_slow", {}, {}, {"spline_vel_min": 0.2, "spline_vel_max": 0.8}),
+
+    # --- Reward tuning ---
+    # 6: Stronger gate_pass
+    ("s2r_v4_gate300", {
         "gate_pass_reward_scale": 300.0,
     }, {}, {}),
 
-    # 3: S2R-V3 + tighter cmd reg
-    ("s2r_v3_tight_cmd", {
+    # 7: Tighter cmd reg
+    ("s2r_v4_tight_cmd", {
         "cmd_reg_rp_scale": -1.5,
         "cmd_reg_yaw_scale": -0.8,
     }, {}, {}),
 
-    # 4: S2R-V3 + more forgiving crash cost
-    ("s2r_v3_forgiving", {
+    # 8: More forgiving crash cost
+    ("s2r_v4_forgiving", {
         "death_cost": -50.0,
     }, {}, {}),
 ]

@@ -15,7 +15,7 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 50
     experiment_name = "quadcopter_direct"
     empirical_normalization = False  # disabled for sim2real: normalizer is not exported to controller
-    wandb_project = "ese651_quadcopter"  # Wandb project name for logging
+    wandb_project = "ese651_sim2real"  # Wandb project name for logging
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[512, 512, 256, 128],  # matches controller_simple_policy.py
@@ -29,7 +29,7 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         clip_param=0.2,
         entropy_coef=0.01,  # exploration bonus for sparse rewards
         num_learning_epochs=8,
-        num_mini_batches=8,  # V3: more mini-batches for stable gradients with sparse rewards
+        num_mini_batches=4,
         learning_rate=1.0e-4,  # conservative for sparse reward stability
         schedule="adaptive",
         gamma=0.99,

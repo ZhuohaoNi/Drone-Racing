@@ -129,6 +129,14 @@ class GateModelCfg:
 class QuadcopterEnvCfg(DirectRLEnvCfg):
     use_wall = False
     track_name = 'circle'
+    action_latency_max = 2
+    mass_variation = 0.1            # ±10% mass randomization (0 = disabled)
+    motor_tau_scale_min = 0.5       # motor time constant randomization range
+    motor_tau_scale_max = 2.0
+    obs_latency_prob = 0.3          # probability of using 1-step-old observation
+    use_spline_reset = True         # spline-based reset positions + velocity init
+    spline_vel_min = 0.5            # min velocity along spline tangent (m/s)
+    spline_vel_max = 1.5            # max velocity along spline tangent (m/s)
 
     # env
     episode_length_s = 30.0             # episode_length = episode_length_s / dt / decimation
@@ -254,10 +262,8 @@ class QuadcopterEnv(DirectRLEnv):
         self._previous_actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
         self._previous_yaw = torch.zeros(self.num_envs, device=self.device)
 
-        # Action latency randomization (Swift, Kaufmann et al. 2023)
-        # Simulates real communication delay (Vicon → policy → Crazyradio → drone).
-        # Each env gets a random delay of 0-2 steps; buffer stores recent actions.
-        self._action_latency_max = 2  # max delay in policy steps (0, 1, or 2)
+        # Action latency randomization (disabled by default in V4; set action_latency_max > 0 to enable)
+        self._action_latency_max = getattr(self.cfg, "action_latency_max", 0)
         self._action_buffer = torch.zeros(
             self._action_latency_max + 1, self.num_envs, self.cfg.action_space, device=self.device
         )
@@ -321,7 +327,9 @@ class QuadcopterEnv(DirectRLEnv):
         self._body_id = self._robot.find_bodies("body")[0]
         self._robot_mass = self._robot.root_physx_view.get_masses()[0].sum()
         self._gravity_magnitude = torch.tensor(self.sim.cfg.gravity, device=self.device).norm()
-        self._robot_weight = (self._robot_mass * self._gravity_magnitude).item()
+        self._nominal_robot_weight = (self._robot_mass * self._gravity_magnitude).item()
+        # Per-env weight tensor (randomized by strategy for mass DR)
+        self._robot_weight = torch.full((self.num_envs,), self._nominal_robot_weight, device=self.device)
 
         self.inertia_tensor = self._robot.root_physx_view.get_inertias()[0, self._body_id, :].view(-1, 3, 3).tile(self.num_envs, 1, 1).to(self.device)
 
