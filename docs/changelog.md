@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Circle-V4] - 2026-04-14
+
+### Stage 2 — Ultra-Conservative Fallback for Real Deployment
+
+V4 is a conservative variant of V3 designed as a fallback at Pennovation. Same obs noise, action latency, and DR as V3, but with stronger command smoothness penalties and less time pressure. The idea: if V3 is too aggressive in real, V4 should fly slower but survive.
+
+Test order at Pennovation: **V4 → V3 → V2** (most conservative first).
+
+### Changed (relative to V3)
+
+| Reward | V3 | V4 | Reason |
+|--------|----|----|--------|
+| `cmd_reg_rp_scale` | -1.0 | **-2.0** | 2x stronger roll/pitch rate penalty for smoother flight |
+| `cmd_reg_yaw_scale` | -0.5 | **-1.0** | 2x stronger yaw rate penalty |
+| `lap_incomplete_penalty` | -0.05 | **-0.02** | Less time pressure — fly slow and safe |
+
+All other settings (obs noise, action latency, DR ranges, network, num_mini_batches) inherited from V3.
+
+### Training
+- `num_envs=8192`, `max_iterations=3000`, `seed=42`
+- `run_name=circle-v4-conservative`
+- Script: `scripts/run/train_circle_v4.sh`
+
+### Experiment Results
+- ⏳ Pending training and zero-shot evaluation at Pennovation
+
+---
+
 ## [Circle-V3] - 2026-04-14
 
 ### Stage 2 — Training Stability & DR Calibration
