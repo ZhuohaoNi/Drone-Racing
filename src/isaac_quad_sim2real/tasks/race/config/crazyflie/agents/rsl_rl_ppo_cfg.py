@@ -29,7 +29,7 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         clip_param=0.2,
         entropy_coef=0.01,  # exploration bonus for sparse rewards
         num_learning_epochs=8,
-        num_mini_batches=8,  # V3: more mini-batches for stable gradients with sparse rewards
+        num_mini_batches=4,
         learning_rate=1.0e-4,  # conservative for sparse reward stability
         schedule="adaptive",
         gamma=0.99,

@@ -6,15 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Circle-V4] - 2026-04-13
 
-### Stage 2 — Spline Reset Strategy + Expanded DR
+### Stage 2 — V2-based + Spline Reset + Moderate New DR
 
-V4 adds two major changes: (1) spline-based reset with velocity initialization, inspired by the champion's "Spline Hallway" strategy; (2) expanded domain randomization (mass, motor tau, obs latency).
+V2 outperformed V3 in real-world testing. V4 starts from V2 as the base, keeps its wider DR ranges for existing parameters, and selectively adds V4 improvements: spline reset and moderate new DR (mass, motor tau). Action delay and observation latency are removed.
 
 ### Changed
 
-**Reset strategy: spline-based sampling + velocity init (champion's key insight)**
-
-The champion's takeaway: "the secret isn't a complex reward function; it's a robust reset strategy." Previous versions used linear interpolation between gate centers with zero velocity. V4 replaces this with:
+**Reset strategy: spline-based sampling + velocity init (kept from prior V4 draft)**
 
 1. **Pre-compute periodic cubic spline** through gate positions at init time (scipy CubicSpline, closed loop). 1024 points + tangent vectors pre-sampled and stored as torch tensors. Zero runtime cost.
 2. **Sample spawn positions along the spline** using gate-biased weights (Beta(0.5, 0.5) PDF on within-segment fraction — more samples near gates).
@@ -24,46 +22,33 @@ The champion's takeaway: "the secret isn't a complex reward function; it's a rob
 
 Reset mixture (unchanged ratios):
 - 50% spline resets (position + velocity along tangent)
-- 30% gate-replay resets (preserved from V3 — real observed states with perturbation)
-- 20% ground resets (preserved from V3 — z=0.03–0.06m behind first gate)
+- 30% gate-replay resets (real observed states with perturbation)
+- 20% ground resets (z=0.03–0.06m behind first gate)
 
-Configurable via `QuadcopterEnvCfg`:
-- `use_spline_reset` (default True, set False for V3-style linear interp)
-- `spline_vel_min` / `spline_vel_max` (default 0.5–1.5 m/s)
+**Domain randomization (V2 base + 2 new moderate params)**
 
-**Domain randomization (3 new parameters)**
+| Parameter | V2 | V3 | V4 | Reason |
+|-----------|----|----|-----|--------|
+| TWR | ±15% | ±15% | **±15%** | Unchanged |
+| Aero drag | 0.2–3.0× | 0.5–2.0× | **0.2–3.0× (V2)** | V2's wider range performed better in real |
+| PID kp/ki | ±35% | ±25% | **±35% (V2)** | V2's wider range performed better in real |
+| PID kd | ±50% | ±35% | **±50% (V2)** | V2's wider range performed better in real |
+| Mass | Fixed | Fixed | **±5%** | New, moderate — real battery weight varies |
+| Motor tau | Fixed | Fixed | **0.7–1.3× nominal** | New, moderate — motor response varies with wear |
+| Action delay | None | 0–2 steps | **None** | Removed — not needed |
+| Obs latency | None | None | **None** | Removed |
 
-| Parameter | V3 | V4 | Reason |
-|-----------|----|----|--------|
-| Mass | Fixed | **±10%** | Real battery weight varies; motor degradation changes effective mass |
-| Motor time constant (tau_m) | Fixed | **0.5–2.0× nominal** | Real motor response varies with wear, temperature, voltage sag |
-| Observation latency | None | **30% chance of 1-step-old obs** | Vicon pipeline has ~10ms latency independent of action delay |
+**Observation noise (kept from V3)**
+- lin_vel_b: σ=0.05 m/s, rot_matrix: σ=0.01, gate_corners: σ=0.02m, prev_action: no noise
 
-Configurable via `QuadcopterEnvCfg` and sweepable via `ENV_OVERRIDES`:
-- `mass_variation` (default 0.1 = ±10%, set 0 to disable)
-- `motor_tau_scale_min` / `motor_tau_scale_max` (default 0.5–2.0, set both to 1.0 to disable)
-- `obs_latency_prob` (default 0.3, set 0 to disable)
+**PPO hyperparameters (reverted to V2)**
 
-**Implementation notes**
-- `_robot_weight` converted from scalar to per-env tensor for per-env mass randomization
-- `_tau_m` now randomized per-episode via scale factor (was fixed)
-- Observation latency stores previous obs and substitutes with probability during training
-- New logging: `Reset/spline_ratio`, `Reset/use_spline` in wandb
-- All new DR disabled during evaluation (nominal values used)
-
-**Sweep infrastructure (`scripts/run/sweep.py`)**
-- 12 configs total:
-  - Config 0: V4 baseline (spline + all DR)
-  - Configs 1–6: DR ablations (action delay, obs latency, mass, tau, all latency, minimal)
-  - Config 7: No spline (V3-style linear interp for A/B comparison)
-  - Config 8: Conservative spline velocity (0.2–0.8 m/s)
-  - Configs 9–11: Reward tuning (gate_pass 300, tighter cmd_reg, forgiving death_cost)
+| Parameter | V2 | V3 | V4 |
+|-----------|----|----|-----|
+| `num_mini_batches` | 4 | 8 | **4 (V2)** |
 
 ### Training
-- Recommended comparison: `python scripts/run/sweep.py --config 0 7 --max-iterations 3000`
-  - Config 0 = V4 baseline (spline reset)
-  - Config 7 = same DR but V3-style linear reset (no spline)
-- This isolates the spline reset effect with all other parameters identical.
+- `num_envs=8192`, `max_iterations=3000`, `seed=42`
 
 ### Experiment Results
 - Pending training and evaluation

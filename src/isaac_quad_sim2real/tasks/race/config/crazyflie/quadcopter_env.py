@@ -262,10 +262,8 @@ class QuadcopterEnv(DirectRLEnv):
         self._previous_actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
         self._previous_yaw = torch.zeros(self.num_envs, device=self.device)
 
-        # Action latency randomization (Swift, Kaufmann et al. 2023)
-        # Simulates real communication delay (Vicon → policy → Crazyradio → drone).
-        # Each env gets a random delay of 0-2 steps; buffer stores recent actions.
-        self._action_latency_max = getattr(self.cfg, "action_latency_max", 2)  # max delay in policy steps (0, 1, or 2)
+        # Action latency randomization (disabled by default in V4; set action_latency_max > 0 to enable)
+        self._action_latency_max = getattr(self.cfg, "action_latency_max", 0)
         self._action_buffer = torch.zeros(
             self._action_latency_max + 1, self.num_envs, self.cfg.action_space, device=self.device
         )

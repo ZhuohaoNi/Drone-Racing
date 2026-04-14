@@ -721,10 +721,6 @@ class CircleQuadcopterStrategy:
         self._gate_replay_counts = torch.zeros(self._num_gates, dtype=torch.long, device=self.device)
         self._gate_replay_ptr = torch.zeros(self._num_gates, dtype=torch.long, device=self.device)
 
-        # Observation latency buffer: stores previous obs to simulate Vicon pipeline delay.
-        # With obs_latency_prob, some envs receive 1-step-old observations each step.
-        self._prev_obs = None  # initialized on first get_observations call
-
         # Pre-compute reference spline through gate positions (closed loop).
         # Used for reset position/velocity sampling when use_spline_reset=True.
         self._build_reference_spline()
@@ -735,42 +731,45 @@ class CircleQuadcopterStrategy:
             self._set_default_dynamics(torch.arange(self.num_envs, device=self.device))
 
     def _randomize_dynamics(self, env_ids: torch.Tensor):
-        """V4 DR: TWR ±15%, Aero 0.5-2.0x, PID kp/ki ±25%, kd ±35%,
-        mass ±10%, motor tau 0.5-2.0x."""
+        """V4 DR: V2 ranges for existing params (TWR ±15%, Aero 0.2-3.0x, PID kp/ki ±35%, kd ±50%),
+        plus moderate mass ±5% and motor tau 0.7-1.3x."""
         n = len(env_ids)
         cfg = self.cfg
 
+        # TWR ±15% (unchanged from V2)
         self.env._thrust_to_weight[env_ids] = torch.empty(n, device=self.device).uniform_(
             cfg.thrust_to_weight * 0.85, cfg.thrust_to_weight * 1.15)
 
-        k_xy_min, k_xy_max = cfg.k_aero_xy * 0.5, cfg.k_aero_xy * 2.0
-        k_z_min,  k_z_max  = cfg.k_aero_z  * 0.5, cfg.k_aero_z  * 2.0
+        # Aero drag 0.2-3.0x (V2 range — wider than V3/V4)
+        k_xy_min, k_xy_max = cfg.k_aero_xy * 0.2, cfg.k_aero_xy * 3.0
+        k_z_min,  k_z_max  = cfg.k_aero_z  * 0.2, cfg.k_aero_z  * 3.0
         self.env._K_aero[env_ids, 0] = torch.empty(n, device=self.device).uniform_(k_xy_min, k_xy_max)
         self.env._K_aero[env_ids, 1] = torch.empty(n, device=self.device).uniform_(k_xy_min, k_xy_max)
         self.env._K_aero[env_ids, 2] = torch.empty(n, device=self.device).uniform_(k_z_min,  k_z_max)
 
-        self.env._kp_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_rp * 0.75, cfg.kp_omega_rp * 1.25)
+        # PID kp/ki ±35%, kd ±50% (V2 range — wider than V3/V4)
+        self.env._kp_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_rp * 0.65, cfg.kp_omega_rp * 1.35)
         self.env._kp_omega[env_ids, 1] = self.env._kp_omega[env_ids, 0]
-        self.env._ki_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_rp * 0.75, cfg.ki_omega_rp * 1.25)
+        self.env._ki_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_rp * 0.65, cfg.ki_omega_rp * 1.35)
         self.env._ki_omega[env_ids, 1] = self.env._ki_omega[env_ids, 0]
-        self.env._kd_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_rp * 0.65, cfg.kd_omega_rp * 1.35)
+        self.env._kd_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_rp * 0.5, cfg.kd_omega_rp * 1.5)
         self.env._kd_omega[env_ids, 1] = self.env._kd_omega[env_ids, 0]
 
-        self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_y * 0.75, cfg.kp_omega_y * 1.25)
-        self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_y * 0.75, cfg.ki_omega_y * 1.25)
-        self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_y * 0.65, cfg.kd_omega_y * 1.35)
+        self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_y * 0.65, cfg.kp_omega_y * 1.35)
+        self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_y * 0.65, cfg.ki_omega_y * 1.35)
+        self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_y * 0.5, cfg.kd_omega_y * 1.5)
 
-        # Mass randomization: ±mass_variation (default ±10%)
-        mass_var = getattr(cfg, 'mass_variation', 0.1)
+        # Mass randomization: ±5% (new, moderate — V4 used ±10%)
+        mass_var = getattr(cfg, 'mass_variation', 0.05)
         if mass_var > 0:
             mass_scale = torch.empty(n, device=self.device).uniform_(1.0 - mass_var, 1.0 + mass_var)
             self.env._robot_weight[env_ids] = self.env._nominal_robot_weight * mass_scale
         else:
             self.env._robot_weight[env_ids] = self.env._nominal_robot_weight
 
-        # Motor time constant randomization: scale_min to scale_max (default 0.5-2.0x)
-        tau_min = getattr(cfg, 'motor_tau_scale_min', 0.5)
-        tau_max = getattr(cfg, 'motor_tau_scale_max', 2.0)
+        # Motor time constant randomization: 0.7-1.3x (new, moderate — V4 used 0.5-2.0x)
+        tau_min = getattr(cfg, 'motor_tau_scale_min', 0.7)
+        tau_max = getattr(cfg, 'motor_tau_scale_max', 1.3)
         if tau_min < tau_max:
             tau_scale = torch.empty(n, device=self.device).uniform_(tau_min, tau_max)
             self.env._tau_m[env_ids] = cfg.tau_m * tau_scale.unsqueeze(1)
@@ -1148,16 +1147,6 @@ class CircleQuadcopterStrategy:
                 device=self.device,
             )
             obs = obs + torch.randn_like(obs) * noise_std
-
-            # Observation latency: with some probability, return 1-step-old obs
-            # to simulate Vicon pipeline delay (~10ms, i.e. ~0.5 policy steps at 50Hz).
-            obs_latency_prob = getattr(self.cfg, 'obs_latency_prob', 0.3)
-            if obs_latency_prob > 0 and self._prev_obs is not None:
-                use_stale = torch.rand(self.num_envs, 1, device=self.device) < obs_latency_prob
-                obs = torch.where(use_stale, self._prev_obs, obs)
-
-        # Always update the buffer (even during eval, for correct init)
-        self._prev_obs = obs.clone()
 
         return {"policy": obs}
 
