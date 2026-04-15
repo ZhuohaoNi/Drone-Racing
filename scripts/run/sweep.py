@@ -20,7 +20,7 @@ import argparse
 import json
 from itertools import product
 
-# ---------- Default reward scales (Circle-V3 Sparse Baseline) ----------
+# ---------- Default reward scales (Circle-V6 Sparse Baseline) ----------
 REWARD_DEFAULTS = {
     "gate_pass_reward_scale": 200.0,
     "death_cost": -100.0,
@@ -31,7 +31,7 @@ REWARD_DEFAULTS = {
     "crash_contact_scale": -0.1,
 }
 
-# ---------- Default PPO config (Circle-V3 baseline) ----------
+# ---------- Default PPO config (Circle-V6 baseline) ----------
 PPO_DEFAULTS = {
     "num_steps_per_env": 64,
     "gamma": 0.99,
@@ -42,7 +42,7 @@ PPO_DEFAULTS = {
     "learning_rate": 1e-4,
 }
 
-# ---------- Environment config defaults ----------
+# ---------- Environment config defaults (Circle-V6) ----------
 ENV_DEFAULTS = {
     "action_latency_max": 0,               # V4: disabled (V2 had none)
     "mass_variation": 0.05,                # ±5% mass randomization (moderate)
@@ -50,53 +50,52 @@ ENV_DEFAULTS = {
     "motor_tau_scale_max": 1.3,            # motor time constant DR upper bound (moderate)
     "obs_latency_prob": 0.0,              # V4: disabled
     "use_spline_reset": True,              # spline-based reset with velocity init
-    "spline_vel_min": 0.5,                # min tangent velocity for spline resets (m/s)
-    "spline_vel_max": 1.5,                # max tangent velocity for spline resets (m/s)
+    "spline_vel_min": 1.0,                # V5: raised from 0.5 (real avg ~2.9 m/s)
+    "spline_vel_max": 3.0,                # V5: raised from 1.5
 }
 
 # ---------- Sweep configurations ----------
 # Each entry: (name, reward_overrides, ppo_overrides, env_overrides)
 # env_overrides is optional (defaults to {}) for backward compat
+#
+# V6 sweep: 4 configs to run in parallel.
+# Strategy: V6 full (all rosbag-informed changes) vs ablating the 3 change groups.
+# The V6 changes live in quadcopter_strategies.py directly (TWR ±20%, yaw PID ±50%/±70%,
+# obs noise 0.10/0.05, angular velocity resets). Sweep env_overrides can only control
+# parameters exposed via ENV_DEFAULTS. The obs noise and DR range changes are hard-coded
+# in the strategy, so ablations revert them via comments in the config name for tracking.
+#
+# NOTE: configs 1-3 ablate by reverting to V5 values. Since TWR/yaw PID/obs noise are
+# hard-coded in CircleQuadcopterStrategy, these ablations require temporarily editing
+# the strategy file. Use --dry-run to see what each config tests, then manually revert
+# the relevant constants for ablation runs if needed.
+#
+# For the default 4-config parallel run: all 4 use the V6 strategy code as-is.
+# The ablation is done via env_overrides where possible.
 SWEEP_CONFIGS = [
-    # 0: V4 baseline (V2 DR ranges + spline reset + moderate mass/tau DR)
-    ("s2r_v4_baseline", {}, {}, {}),
+    # 0: V6 full — all rosbag-informed DR changes (new baseline)
+    #    TWR ±20%, yaw PID ±50%/±70%, obs noise 0.10/0.05m, ang vel resets ±1 rad/s
+    ("s2r_v6_full", {}, {}, {}),
 
-    # --- Ablation: DR components ---
-    # 1: No mass randomization
-    ("s2r_v4_no_mass_dr", {}, {}, {"mass_variation": 0.0}),
-
-    # 2: No motor tau randomization (fixed tau_m)
-    ("s2r_v4_no_tau_dr", {}, {}, {"motor_tau_scale_min": 1.0, "motor_tau_scale_max": 1.0}),
-
-    # 3: No new DR (no mass, no tau — pure V2 DR only)
-    ("s2r_v4_v2_dr_only", {}, {}, {
-        "mass_variation": 0.0,
-        "motor_tau_scale_min": 1.0,
-        "motor_tau_scale_max": 1.0,
-    }),
-
-    # --- Reset strategy ablation ---
-    # 4: No spline reset (V2-style linear interp, zero velocity)
-    ("s2r_v4_no_spline", {}, {}, {"use_spline_reset": False}),
-
-    # 5: Spline reset but slower velocity (more conservative)
-    ("s2r_v4_spline_slow", {}, {}, {"spline_vel_min": 0.2, "spline_vel_max": 0.8}),
-
-    # --- Reward tuning ---
-    # 6: Stronger gate_pass
-    ("s2r_v4_gate300", {
-        "gate_pass_reward_scale": 300.0,
-    }, {}, {}),
-
-    # 7: Tighter cmd reg
-    ("s2r_v4_tight_cmd", {
+    # 1: V6 + stronger cmd reg — test if higher obs noise needs smoother commands
+    #    Hypothesis: noisier obs may cause jerkier actions; stronger penalty compensates
+    ("s2r_v6_tight_cmd", {
         "cmd_reg_rp_scale": -1.5,
         "cmd_reg_yaw_scale": -0.8,
     }, {}, {}),
 
-    # 8: More forgiving crash cost
-    ("s2r_v4_forgiving", {
-        "death_cost": -50.0,
+    # 2: V6 + stronger gate_pass — test if wider DR + noisier obs slows learning
+    #    Hypothesis: harder task needs stronger reward signal to maintain convergence speed
+    ("s2r_v6_gate300", {
+        "gate_pass_reward_scale": 300.0,
+    }, {}, {}),
+
+    # 3: V6 + both (strongest signal + smoothest control)
+    #    Hypothesis: combined may be best for real-world transfer
+    ("s2r_v6_gate300_tight_cmd", {
+        "gate_pass_reward_scale": 300.0,
+        "cmd_reg_rp_scale": -1.5,
+        "cmd_reg_yaw_scale": -0.8,
     }, {}, {}),
 ]
 

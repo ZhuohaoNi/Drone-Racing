@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Circle-V6] - 2026-04-14
+
+### Stage 2 — DR tuning from rosbag analysis
+
+Rosbag analysis of 3 real flights (cyclev2/v3/v4) revealed consistent physical system characteristics that the sim DR wasn't covering. All changes are DR constant tweaks — no reward changes, no structural changes.
+
+### Changed (relative to V5)
+
+**Domain randomization (informed by rosbag real-world data)**
+
+| Parameter | V5 | V6 | Evidence |
+|-----------|----|----|----------|
+| TWR | ±15% | **±20%** | TA applies ~30% DR on top; effective TWR can be far from nominal |
+| Yaw PID kp/ki | ±35% | **±50%** | Rosbag: yaw tracking error 2-3x worse than roll/pitch (58 vs 24-30 deg/s mean error) across all flights |
+| Yaw PID kd | ±50% | **±70%** | Same yaw tracking gap evidence |
+| Roll/pitch PID | ±35% kp/ki, ±50% kd | **unchanged** | Roll/pitch tracking adequate in real |
+
+**Observation noise (calibrated to rosbag measurements)**
+
+| Noise | V5 | V6 | Evidence |
+|-------|----|----|----------|
+| `lin_vel_b` | σ=0.05 m/s | **σ=0.10 m/s** | Rosbag: up to 0.22 m/s obs-odom velocity error during aggressive turns |
+| `gate_corners_b` | σ=0.02m | **σ=0.05m** | Gates hand-measured + Vicon calibration offset |
+| `rot_matrix` | σ=0.01 | unchanged | |
+| `prev_action` | 0 | unchanged | |
+
+**Reset distribution**
+
+| Parameter | V5 | V6 | Reason |
+|-----------|----|----|--------|
+| Spline reset angular velocity | 0 rad/s | **uniform ±1.0 rad/s** | Rosbag: drone always has nonzero body rates during flight; zero-angvel resets are unrealistic |
+
+### Training
+- `num_envs=8192`, `max_iterations=3000`, `seed=42`
+
+### Experiment Results
+- ⏳ Pending real-world evaluation at Pennovation
+
+---
+
 ## [Circle-V5] - 2026-04-15
 
 ### Stage 2 — V4 minor variant: higher spline reset velocity

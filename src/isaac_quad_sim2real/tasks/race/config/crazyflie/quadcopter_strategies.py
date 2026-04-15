@@ -731,14 +731,14 @@ class CircleQuadcopterStrategy:
             self._set_default_dynamics(torch.arange(self.num_envs, device=self.device))
 
     def _randomize_dynamics(self, env_ids: torch.Tensor):
-        """V4 DR: V2 ranges for existing params (TWR ±15%, Aero 0.2-3.0x, PID kp/ki ±35%, kd ±50%),
-        plus moderate mass ±5% and motor tau 0.7-1.3x."""
+        """V6 DR: wider TWR ±20%, yaw PID kp ±50% / kd ±70% (rosbag: yaw tracking 2-3x worse),
+        plus V4 mass ±5% and motor tau 0.7-1.3x."""
         n = len(env_ids)
         cfg = self.cfg
 
-        # TWR ±15% (unchanged from V2)
+        # TWR ±20% (widened from ±15%; real effective TWR varies more with TA 30% DR on top)
         self.env._thrust_to_weight[env_ids] = torch.empty(n, device=self.device).uniform_(
-            cfg.thrust_to_weight * 0.85, cfg.thrust_to_weight * 1.15)
+            cfg.thrust_to_weight * 0.80, cfg.thrust_to_weight * 1.20)
 
         # Aero drag 0.2-3.0x (V2 range — wider than V3/V4)
         k_xy_min, k_xy_max = cfg.k_aero_xy * 0.2, cfg.k_aero_xy * 3.0
@@ -755,9 +755,10 @@ class CircleQuadcopterStrategy:
         self.env._kd_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_rp * 0.5, cfg.kd_omega_rp * 1.5)
         self.env._kd_omega[env_ids, 1] = self.env._kd_omega[env_ids, 0]
 
-        self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_y * 0.65, cfg.kp_omega_y * 1.35)
-        self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_y * 0.65, cfg.ki_omega_y * 1.35)
-        self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_y * 0.5, cfg.kd_omega_y * 1.5)
+        # Yaw PID: wider DR (rosbag shows yaw tracking error 2-3x worse than roll/pitch)
+        self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_y * 0.50, cfg.kp_omega_y * 1.50)
+        self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_y * 0.50, cfg.ki_omega_y * 1.50)
+        self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_y * 0.30, cfg.kd_omega_y * 1.70)
 
         # Mass randomization: ±5% (new, moderate — V4 used ±10%)
         mass_var = getattr(cfg, 'mass_variation', 0.05)
@@ -1139,10 +1140,10 @@ class CircleQuadcopterStrategy:
         # Simulates Vicon measurement noise, velocity estimation error, and gate calibration error.
         if self.cfg.is_train:
             noise_std = torch.tensor(
-                [0.05] * 3          # lin_vel_b: ±0.05 m/s (Vicon velocity from numerical diff)
+                [0.10] * 3          # lin_vel_b: ±0.10 m/s (rosbag: up to 0.22 m/s obs-odom error during turns)
                 + [0.01] * 9        # rot_matrix: ±0.01 (small attitude noise)
-                + [0.02] * 12       # curr_gate_corners: ±0.02m (gate calibration)
-                + [0.02] * 12       # next_gate_corners: ±0.02m
+                + [0.05] * 12       # curr_gate_corners: ±0.05m (hand-measured gates + Vicon calibration)
+                + [0.05] * 12       # next_gate_corners: ±0.05m
                 + [0.0] * 4,        # prev_action: no noise (known exactly)
                 device=self.device,
             )
@@ -1261,7 +1262,8 @@ class CircleQuadcopterStrategy:
             vel_max = getattr(self.cfg, 'spline_vel_max', 3.0)
             speed = torch.empty(n_reset, device=self.device).uniform_(vel_min, vel_max)
             default_root_state[:, 7:10] = spawn_tangent * speed.unsqueeze(1)
-            default_root_state[:, 10:13] = 0.0  # zero angular velocity
+            # Nonzero angular velocity (rosbag: drone always has body rates during flight)
+            default_root_state[:, 10:13] = torch.empty(n_reset, 3, device=self.device).uniform_(-1.0, 1.0)
 
             # Yaw aligned to spline tangent + noise
             initial_yaw = torch.atan2(spawn_tangent[:, 1], spawn_tangent[:, 0])
