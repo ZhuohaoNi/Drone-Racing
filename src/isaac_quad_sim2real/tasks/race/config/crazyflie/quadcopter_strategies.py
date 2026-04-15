@@ -725,6 +725,11 @@ class CircleQuadcopterStrategy:
         # Used for reset position/velocity sampling when use_spline_reset=True.
         self._build_reference_spline()
 
+        # Delta action smoothness tracking (for cmd_smoothness_scale reward)
+        self._prev_actions = torch.zeros(
+            self.num_envs, self.cfg.action_space, dtype=torch.float, device=self.device
+        )
+
         if self.cfg.is_train:
             self._randomize_dynamics(torch.arange(self.num_envs, device=self.device))
         else:
@@ -1058,11 +1063,16 @@ class CircleQuadcopterStrategy:
             cmd_reg = (self.env._actions[:, 1] ** 2 + self.env._actions[:, 2] ** 2) * self.env.rew['cmd_reg_rp_scale'] \
                     + (self.env._actions[:, 3] ** 2) * self.env.rew['cmd_reg_yaw_scale']
 
+            # Delta action smoothness: penalize abrupt changes between consecutive actions
+            delta_action = ((self.env._actions - self._prev_actions) ** 2).sum(dim=1)
+            cmd_smoothness = delta_action * self.env.rew['cmd_smoothness_scale']
+            self._prev_actions = self.env._actions.clone()
+
             r_gate = gate_pass * self.env.rew['gate_pass_reward_scale']
             r_lap_incomplete = self.env.rew['lap_incomplete_penalty_scale']  # constant per-step cost
             r_crash = contact_penalty * self.env.rew['crash_contact_scale']
 
-            reward = r_gate + r_lap_incomplete + cmd_reg + r_crash
+            reward = r_gate + r_lap_incomplete + cmd_reg + cmd_smoothness + r_crash
 
             # Death cost override on terminal episodes
             reward = torch.where(self.env.reset_terminated,
@@ -1366,6 +1376,7 @@ class CircleQuadcopterStrategy:
         self.env._n_gates_passed[env_ids] = 0
         self._lap_start_step[env_ids] = 0
         self._steps_since_gate_pass[env_ids] = 999
+        self._prev_actions[env_ids] = 0.0
         if self.cfg.is_train:
             effective_replay_mask = replay_mask & (~ground_mask)
             spline_mask = (~replay_mask) & (~ground_mask)

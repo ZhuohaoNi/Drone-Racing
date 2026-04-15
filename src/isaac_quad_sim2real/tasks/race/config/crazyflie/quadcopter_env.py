@@ -122,8 +122,8 @@ class QuadcopterEnvWindow(BaseEnvWindow):
 class GateModelCfg:
     usd_path: str = "./usd/gate.usda"
     prim_name: str = "gate"
-    gate_side: float = 1.0
-    scale = [1.0, gate_side, gate_side]
+    gate_side: float = 0.7  # V6: reward boundary only; physical mesh stays at 1.0
+    scale = [1.0, 1.0, 1.0]  # Physical gate mesh always full size; gate_side only affects pass check
 
 @configclass
 class QuadcopterEnvCfg(DirectRLEnvCfg):

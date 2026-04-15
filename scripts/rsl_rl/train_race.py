@@ -117,6 +117,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     cmd_reg_yaw_scale = float(os.environ.get('REW_CMD_REG_YAW', -0.5))
     crash_reward_scale = float(os.environ.get('REW_CRASH', -2.0))
     crash_contact_scale = float(os.environ.get('REW_CRASH_CONTACT', -0.1))
+    cmd_smoothness_scale = float(os.environ.get('REW_CMD_SMOOTHNESS', 0.0))
 
     rewards = {
         'gate_pass_reward_scale': gate_pass_reward_scale,
@@ -126,6 +127,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         'cmd_reg_yaw_scale': cmd_reg_yaw_scale,
         'crash_reward_scale': crash_reward_scale,
         'crash_contact_scale': crash_contact_scale,
+        'cmd_smoothness_scale': cmd_smoothness_scale,
     }
     # TODO ----- END -----
 

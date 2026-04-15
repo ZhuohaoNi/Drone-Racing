@@ -1,0 +1,45 @@
+{
+  "bag": "/home/peterni/Documents/ese6510/ese651_project/rosbags/group30_cyclev2",
+  "namespace": null,
+  "sim_nominal": {
+    "thrust_to_weight": 1.9,
+    "k_aero_xy": 0.01,
+    "k_aero_z": 0.01,
+    "mass_kg": 0.033,
+    "g": 9.81
+  },
+  "identified": {
+    "twr_est": 1.3851399217182414,
+    "twr_std": 0.49167993973694446,
+    "k_aero_xy_est": 0.09062320339063727,
+    "k_aero_xy_std": 0.025061551346918332,
+    "pid_lag_s": {
+      "roll": 1.03,
+      "pitch": 1.08,
+      "yaw": 0.06
+    },
+    "mean_lag_s": 0.7233333333333335
+  },
+  "suggested_dr": {
+    "TWR": {
+      "identified_scale": 0.729,
+      "suggested_range_lo": 0.211,
+      "suggested_range_hi": 1.247,
+      "current_sim": "\u00b115% \u2192 [0.85, 1.15]\u00d7nominal",
+      "note": "Real TWR is 0.73\u00d7 nominal \u2014 recenter DR here"
+    },
+    "k_aero_xy": {
+      "identified_scale": 9.062,
+      "suggested_range_lo": 4.05,
+      "suggested_range_hi": 14.075,
+      "current_sim": "0.2\u20133.0\u00d7 nominal",
+      "note": "Real drag is 9.06\u00d7 nominal \u2014 tighten DR center"
+    },
+    "action_latency_steps": {
+      "identified_steps": 3,
+      "identified_lag_ms": 723,
+      "current_sim": "0\u20132 steps (V3) / none (V4+)",
+      "note": "Real lag \u2248 3 policy steps \u2014 use this as max_latency"
+    }
+  }
+}

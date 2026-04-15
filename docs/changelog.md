@@ -4,6 +4,134 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Circle-V7-Rebalance] - 2026-04-15
+
+### Ablation — Pasumarti-aligned cmd_reg ratio
+
+Same as V6 (gate_side=0.7, no smoothness penalty), but re-weights the command regularization to match Pasumarti 2026 Eq. 5: `r_cmd = 2.0·(ω_roll² + ω_pitch²) + 0.05·ω_yaw²`.
+
+**Why:** V2/V3/V4 real-world rosbags show mean body rates of 98–160 rad/s, with peaks driven by roll/pitch during gate passage. Yaw rate stays low throughout. The current split (`rp=-1.0, yaw=-0.5`) under-penalizes roll/pitch (the actual source of jerkiness) and over-penalizes yaw (a non-issue), which likely crowds out exploration in the axes that matter.
+
+**Run name:** `circle-v7-rebalance`
+**Log folder:** `logs/rsl_rl/quadcopter_direct/<timestamp>_circle-v7-rebalance/`
+
+### Changed (relative to V6)
+
+| Parameter | V6 | V7-Rebalance |
+|-----------|----|----|
+| `cmd_reg_rp_scale` | -1.0 | **-2.0** |
+| `cmd_reg_yaw_scale` | -0.5 | **-0.05** |
+
+### Deployment
+Shares the V6 controller: `controller_simple_policy.py` now hardcodes `self.gate_side = 0.7` (see V6 deployment robustness fix). No config.yaml dependency. V2/V3/V4 rollback uses the locally-saved pre-V6 controller (`gate_side=1.0`).
+
+### Expected outcome
+- Lower real-world mean body rate (target < 120 rad/s, i.e. beating V2).
+- Similar or slightly slower lap time than V2 (stronger rp penalty may cost ~0.05s/lap).
+- If body rate *does not* drop, the bottleneck isn't the reward — likely dynamics mismatch, and the next step should be V7-Residual using real rosbags.
+
+### Experiment Results
+- ⏳ Pending
+
+---
+
+## [Circle-V6-Smooth2] - 2026-04-15
+
+### Ablation — V6 + stronger delta action penalty
+
+Identical to V6 except `cmd_smoothness_scale = -0.2`. Controls how aggressively consecutive action changes are penalized.
+
+**Run name:** `circle-v6-smooth2`
+**Log folder:** `logs/rsl_rl/quadcopter_direct/<timestamp>_circle-v6-smooth2/`
+
+### Changed (relative to V6)
+
+| Parameter | V6 | V6-Smooth2 |
+|-----------|----|----|
+| `cmd_smoothness_scale` | 0.0 | **-0.2** |
+
+### Experiment Results
+- ⏳ Pending
+
+---
+
+## [Circle-V6-Smooth] - 2026-04-15
+
+### Ablation — V6 + delta action smoothness penalty
+
+Identical to V6 but adds a per-step penalty on the squared change between consecutive actions:
+
+```
+r_smooth = |a_t - a_{t-1}|² × cmd_smoothness_scale
+```
+
+**Why:** `cmd_reg` penalizes large absolute body rates but not high-frequency jitter. A policy can have moderate average body rate but still be jerky frame-to-frame. In real hardware, high-frequency commands are attenuated by motor bandwidth — the drone physically can't execute 50Hz control changes. The smoothness penalty explicitly discourages this jitter without slowing the drone down.
+
+**Coefficient choice:** -0.1 is small relative to gate_pass (+200). At typical delta_action ≈ 0.05, per-step penalty ≈ 0.00025 — nudges the policy without dominating.
+
+**Run name:** `circle-v6-smooth`
+**Log folder:** `logs/rsl_rl/quadcopter_direct/<timestamp>_circle-v6-smooth/`
+
+### Changed (relative to V6)
+
+| Parameter | V6 | V6-Smooth |
+|-----------|----|----|
+| `cmd_smoothness_scale` | 0.0 | **-0.1** |
+
+### Experiment Results
+- ⏳ Pending
+
+---
+
+## [Circle-V6] - 2026-04-15
+
+### Stage 2 — V5 + reduced gate_side for safer gate passage
+
+Small tweak to V5: reduce `gate_side` from 1.0 to 0.7 so the policy learns to aim for the center of the gate rather than anywhere within the full opening.
+
+**Reasoning:**
+
+The gate inner opening is 1.0m × 1.0m (from USD asset: inner vertices at ±0.5m). From real-world data (V2), mean gate clearance was 0.443m from gate center, leaving only 0.057m (5.7cm) from the inner edge — tighter than the Crazyflie's half-diagonal (4.6cm). This is risky.
+
+By setting `gate_side = 0.7` (±0.35m virtual corners), the policy learns to aim for a 0.7m × 0.7m virtual opening centered in the real 1.0m × 1.0m gate. Each side has 0.15m physical margin:
+
+```
+0.15m margin - 0.046m (Crazyflie half-diagonal) - 0.03m (gate calibration error) ≈ 0.074m real safety buffer
+```
+
+`gate_side = 0.8` was considered but only gives 5.4cm real buffer after accounting for drone body — too tight. `gate_side = 0.7` gives ~7.4cm.
+
+**Expected cost:** ~0.1-0.2s per lap slower (policy flies more conservatively through gate center). Acceptable tradeoff for robustness.
+
+**Important:** V6's `gate_side=0.7` must be set in both training (`quadcopter_env.py`) AND real controller (`config.yaml`). Previous versions (V2/V3/V4/V5) used `gate_side=1.0` — revert config.yaml when deploying those checkpoints.
+
+**Deployment robustness fix (2026-04-15):** Relying on `config.yaml` is fragile — at Pennovation the course-provided runtime config may override ours, feeding the policy the wrong gate-corner positions (±0.5m instead of ±0.35m). Fix: treat `params["gate_side"]` as the *physical* gate opening (1.0m) and apply a per-policy `SAFETY_MARGIN` in `controller_simple_policy.py`:
+
+```python
+SAFETY_MARGIN = 0.15  # 0 for V2/V3/V4, 0.15 for V6/V7
+self.gate_side = params["gate_side"] - 2 * SAFETY_MARGIN
+```
+
+`config.yaml` is restored to `gate_side: 1.0` to match the physical-size convention. Works correctly whether TA's runtime config supplies 1.0 or ours does. For V2/V3/V4 rollback, either set `SAFETY_MARGIN = 0.0` or swap in the locally-saved pre-V6 controller.
+
+### Changed (relative to V5)
+
+| Parameter | V5 | V6 | Reason |
+|-----------|----|----|--------|
+| `gate_side` (train + real) | 1.0 | **0.7** | Push policy to aim for gate center; 0.15m per side accounts for drone body (4.6cm) + calibration error |
+| `spline_vel_min` | 0.5 m/s | **1.0 m/s** | (carried from V5) |
+| `spline_vel_max` | 1.5 m/s | **3.0 m/s** | (carried from V5) |
+
+### Training
+- `num_envs=8192`, `max_iterations=3000`, `seed=42`
+- **Run name:** `circle-v6`
+- **Log folder:** `logs/rsl_rl/quadcopter_direct/<timestamp>_circle-v6/`
+
+### Experiment Results
+- ⏳ Pending real-world evaluation at Pennovation
+
+---
+
 ## [Circle-V5] - 2026-04-15
 
 ### Stage 2 — V4 minor variant: higher spline reset velocity
@@ -17,7 +145,7 @@ Small tweak to V4: increase spline reset velocity range to better match real fli
 | `spline_vel_min` | 0.5 m/s | **1.0 m/s** | Remove near-hover starts from spline resets (ground resets already cover 0 m/s) |
 | `spline_vel_max` | 1.5 m/s | **3.0 m/s** | Match real flight speed; policy needs to learn high-speed gate entry |
 
-All other settings identical to V4 (spline reset, V2 DR ranges, mass ±5%, motor tau 0.7-1.3x, obs noise).
+All other settings identical to V4 (spline reset, V2 DR ranges, mass ±5%, motor tau 0.7-1.3x, obs noise, gate_side=1.0).
 
 ### Training
 - `num_envs=8192`, `max_iterations=3000`, `seed=42`
