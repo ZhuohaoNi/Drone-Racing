@@ -73,27 +73,37 @@ ENV_DEFAULTS = {
 # For the default 4-config parallel run: all 4 use the V6 strategy code as-is.
 # The ablation is done via env_overrides where possible.
 SWEEP_CONFIGS = [
-    # 0: V6 full — all rosbag-informed DR changes (new baseline)
-    #    TWR ±20%, yaw PID ±50%/±70%, obs noise 0.10/0.05m, ang vel resets ±1 rad/s
-    ("s2r_v6_full", {}, {}, {}),
+    # ---- 2x2 factorial: (V2 base vs V4/V5 base) x (default vs tight cmd) ----
+    # All 4 use V6 DR code (TWR ±20%, yaw PID ±50%/±70%, obs noise 0.10/0.05m, ang vel resets)
+    #
+    # V2 base: no spline reset, no mass/tau DR — proven best in real (lowest body rate,
+    #          best consistency std=0.011s, best gate clearance 0.443m)
+    # V4/V5 base: spline reset + mass ±5% + motor tau 0.7-1.3x + vel 1.0-3.0 m/s
 
-    # 1: V6 + stronger cmd reg — test if higher obs noise needs smoother commands
-    #    Hypothesis: noisier obs may cause jerkier actions; stronger penalty compensates
-    ("s2r_v6_tight_cmd", {
+    # 0: V2 base + V6 DR — minimal env changes, just better DR coverage
+    ("s2r_v6_v2base", {}, {}, {
+        "use_spline_reset": False,
+        "mass_variation": 0.0,
+        "motor_tau_scale_min": 1.0,
+        "motor_tau_scale_max": 1.0,
+    }),
+
+    # 1: V2 base + V6 DR + tight cmd — V2 was smoothest; does noisier obs need more reg?
+    ("s2r_v6_v2base_tight_cmd", {
         "cmd_reg_rp_scale": -1.5,
         "cmd_reg_yaw_scale": -0.8,
-    }, {}, {}),
+    }, {}, {
+        "use_spline_reset": False,
+        "mass_variation": 0.0,
+        "motor_tau_scale_min": 1.0,
+        "motor_tau_scale_max": 1.0,
+    }),
 
-    # 2: V6 + stronger gate_pass — test if wider DR + noisier obs slows learning
-    #    Hypothesis: harder task needs stronger reward signal to maintain convergence speed
-    ("s2r_v6_gate300", {
-        "gate_pass_reward_scale": 300.0,
-    }, {}, {}),
+    # 2: V4/V5 base + V6 DR — spline reset + mass/tau DR + rosbag DR
+    ("s2r_v6_v4base", {}, {}, {}),
 
-    # 3: V6 + both (strongest signal + smoothest control)
-    #    Hypothesis: combined may be best for real-world transfer
-    ("s2r_v6_gate300_tight_cmd", {
-        "gate_pass_reward_scale": 300.0,
+    # 3: V4/V5 base + V6 DR + tight cmd
+    ("s2r_v6_v4base_tight_cmd", {
         "cmd_reg_rp_scale": -1.5,
         "cmd_reg_yaw_scale": -0.8,
     }, {}, {}),
