@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Circle-V5] - 2026-04-15
+
+### Stage 2 — V4 minor variant: higher spline reset velocity
+
+Small tweak to V4: increase spline reset velocity range to better match real flight speed (~2.9 m/s avg observed in V2/V3 real runs).
+
+### Changed (relative to V4)
+
+| Parameter | V4 | V5 | Reason |
+|-----------|----|----|--------|
+| `spline_vel_min` | 0.5 m/s | **1.0 m/s** | Remove near-hover starts from spline resets (ground resets already cover 0 m/s) |
+| `spline_vel_max` | 1.5 m/s | **3.0 m/s** | Match real flight speed; policy needs to learn high-speed gate entry |
+
+All other settings identical to V4 (spline reset, V2 DR ranges, mass ±5%, motor tau 0.7-1.3x, obs noise).
+
+### Training
+- `num_envs=8192`, `max_iterations=3000`, `seed=42`
+
+### Experiment Results
+- ⏳ Pending real-world evaluation at Pennovation
+
+---
+
 ## [Circle-V4] - 2026-04-13
 
 ### Stage 2 — V2-based + Spline Reset + Moderate New DR
@@ -51,7 +74,58 @@ Reset mixture (unchanged ratios):
 - `num_envs=8192`, `max_iterations=3000`, `seed=42`
 
 ### Experiment Results
-- Pending training and evaluation
+- ⏳ Pending real-world evaluation at Pennovation
+
+---
+
+## [Circle-V4-Conservative] - 2026-04-14
+
+### Stage 2 — Ultra-Conservative Fallback for Real Deployment
+
+V4 is a conservative variant of V3 designed as a fallback at Pennovation. Same obs noise, action latency, and DR as V3, but with stronger command smoothness penalties and less time pressure. The idea: if V3 is too aggressive in real, V4 should fly slower but survive.
+
+Test order at Pennovation: **V4 → V3 → V2** (most conservative first).
+
+### Changed (relative to V3)
+
+| Reward | V3 | V4 | Reason |
+|--------|----|----|--------|
+| `cmd_reg_rp_scale` | -1.0 | **-2.0** | 2x stronger roll/pitch rate penalty for smoother flight |
+| `cmd_reg_yaw_scale` | -0.5 | **-1.0** | 2x stronger yaw rate penalty |
+| `lap_incomplete_penalty` | -0.05 | **-0.02** | Less time pressure — fly slow and safe |
+
+All other settings (obs noise, action latency, DR ranges, network, num_mini_batches) inherited from V3.
+
+### Training
+- `num_envs=8192`, `max_iterations=3000`, `seed=42`
+- `run_name=circle-v4-conservative`
+- Script: `scripts/run/train_circle_v4.sh`
+
+### Experiment Results — Real-world @ Pennovation 2026-04-15 (bag: `group30_cyclev4`)
+
+| Metric | Value |
+|--------|-------|
+| Total race time (first gate → last) | 7.624 s |
+| Takeoff → 3 laps done | 9.066 s |
+| Best lap | 2.050 s |
+| Mean lap | 2.133 s |
+| Lap std (consistency) | 0.090 s |
+| Path length (race) | 22.56 m |
+| Mean / max speed | 2.96 / 4.05 m/s |
+| Mean / max tilt | 33.7 / 51.2 deg |
+| Mean / max body rate | 98.37 / 243.48 rad/s |
+| Mean / max thrust | 0.62 / 1.17 N |
+| Mean gate clearance | 0.436 m |
+
+Per-lap breakdown:
+
+| Lap | Time (s) | Path (m) | v_avg | v_max | br_avg | br_max | gate_d |
+|-----|----------|----------|-------|-------|--------|--------|--------|
+| 1 | 2.050 | 6.07 | 2.97 | 3.64 | 102.56 | 224.02 | 0.377 |
+| 2 | 2.257 | 6.55 | 2.90 | 4.05 | 94.46 | 238.09 | 0.423 |
+| 3 | 2.091 | 5.97 | 2.87 | 3.81 | 101.60 | 207.14 | 0.509 |
+
+**Interpretation:** Strongest cmd_reg penalty produced the lowest mean body rate (98 rad/s) across all tested versions, confirming the conservative penalty worked. However, lap time (2.133s mean) and consistency (std=0.090s) were the worst — the reduced `lap_incomplete_penalty` let the policy "linger" between gates. Slower but not more consistent than V2/V3.
 
 ---
 
@@ -97,8 +171,31 @@ V2 achieved 99.9% SR in sim with 3-param DR eval, but training curves showed lar
 - `num_envs=8192`, `max_iterations=3000`, `seed=42`
 - `run_name=circle-v3-tighter-dr`
 
-### Experiment Results
-- ⏳ Pending training and zero-shot evaluation at Pennovation
+### Experiment Results — Real-world @ Pennovation 2026-04-15 (bag: `group30_cyclev3`)
+
+| Metric | Value |
+|--------|-------|
+| Total race time (first gate → last) | 6.750 s |
+| Takeoff → 3 laps done | 7.359 s |
+| Best lap | 1.867 s |
+| Mean lap | 1.884 s |
+| Lap std (consistency) | 0.013 s |
+| Path length (race) | 19.95 m |
+| Mean / max speed | 2.96 / 4.01 m/s |
+| Mean / max tilt | 38.0 / 48.7 deg |
+| Mean / max body rate | 159.66 / 234.83 rad/s |
+| Mean / max thrust | 0.66 / 1.17 N |
+| Mean gate clearance | 0.496 m |
+
+Per-lap breakdown:
+
+| Lap | Time (s) | Path (m) | v_avg | v_max | br_avg | br_max | gate_d |
+|-----|----------|----------|-------|-------|--------|--------|--------|
+| 1 | 1.900 | 5.86 | 3.10 | 4.01 | 155.60 | 222.21 | 0.489 |
+| 2 | 1.867 | 5.34 | 2.87 | 3.14 | 165.57 | 234.83 | 0.508 |
+| 3 | 1.883 | 5.40 | 2.88 | 3.25 | 160.16 | 233.01 | 0.491 |
+
+**Interpretation:** Very consistent laps (std=0.013s). Higher body rate than V2 (159 vs 122 rad/s avg) suggests tighter DR didn't help smoothness in real. Faster overall than V4 but slightly slower than V2. Gate clearance slightly worse than V2 (0.496 vs 0.443m).
 
 ---
 
@@ -160,8 +257,31 @@ Circle-V1 failed to fly in real. Two likely causes were identified: (1) dense re
 - `num_envs=16384`, `max_iterations=5000`, `seed=42`
 - `run_name=circle-v2-sparse`
 
-### Experiment Results
-- ⏳ Pending training and zero-shot evaluation at Pennovation
+### Experiment Results — Real-world @ Pennovation 2026-04-15 (bag: `group30_cyclev2`)
+
+| Metric | Value |
+|--------|-------|
+| Total race time (first gate → last) | 6.959 s |
+| Takeoff → 3 laps done | 7.459 s |
+| Best lap | 1.866 s |
+| Mean lap | 1.878 s |
+| Lap std (consistency) | 0.011 s |
+| Path length (race) | 20.34 m |
+| Mean / max speed | 2.93 / 3.73 m/s |
+| Mean / max tilt | 36.3 / 48.6 deg |
+| Mean / max body rate | 121.67 / 243.88 rad/s |
+| Mean / max thrust | 0.75 / 1.17 N |
+| Mean gate clearance | 0.443 m |
+
+Per-lap breakdown:
+
+| Lap | Time (s) | Path (m) | v_avg | v_max | br_avg | br_max | gate_d |
+|-----|----------|----------|-------|-------|--------|--------|--------|
+| 1 | 1.866 | 5.72 | 3.08 | 3.73 | 118.60 | 210.67 | 0.383 |
+| 2 | 1.875 | 5.39 | 2.89 | 3.12 | 113.66 | 219.98 | 0.482 |
+| 3 | 1.892 | 5.38 | 2.86 | 3.13 | 109.76 | 216.73 | 0.463 |
+
+**Interpretation:** Best consistency across all versions (std=0.011s). Lowest body rate (122 rad/s avg) — smoothest control. Best gate clearance (0.443m). Slightly slower total race time than V3 (6.959 vs 6.750s) but more reliable lap-to-lap. **V2 is the strongest baseline for real-world deployment.**
 
 ### Interpretation Guide
 Key metrics to watch during training:

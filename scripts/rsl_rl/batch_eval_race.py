@@ -56,7 +56,6 @@ if os.path.exists(local_rsl_path):
     print(f"[INFO] Using local rsl_rl from: {local_rsl_path}")
 
 import argparse, time, json, random
-from scipy import stats
 
 from isaaclab.app import AppLauncher
 import cli_args  # isort: skip
@@ -392,43 +391,6 @@ def run_trial(env, policy, env_param_values: dict, max_steps: int, trial_label: 
     }
 
 
-# ── P-test analysis ───────────────────────────────────────────────────────────
-TARGET_TIME = 16.06  # TA benchmark time to beat
-
-
-def compute_p_test(success_times, target=TARGET_TIME):
-    """Compute probability that a random sample beats the target time.
-
-    Returns dict with:
-      - empirical_p:  fraction of samples < target
-      - ttest_p:      one-sample t-test p-value (H0: mean >= target)
-      - mean, std, n: sample statistics
-    """
-    result = {"target": target}
-    if len(success_times) == 0:
-        result.update({"empirical_p": 0.0, "ttest_p": 1.0, "mean": None, "std": None, "n": 0})
-        return result
-
-    arr = np.asarray(success_times)
-    n = len(arr)
-    result["n"] = n
-    result["mean"] = float(arr.mean())
-    result["std"] = float(arr.std(ddof=1)) if n > 1 else 0.0
-
-    # Empirical: what fraction of runs beat the target?
-    result["empirical_p"] = float((arr < target).mean())
-
-    # One-sample t-test: H0: mu >= target vs H1: mu < target (one-sided, left)
-    if n > 1 and result["std"] > 0:
-        t_stat, two_sided_p = stats.ttest_1samp(arr, target)
-        # one-sided: P(mean < target)
-        result["ttest_p"] = float(two_sided_p / 2) if t_stat < 0 else float(1 - two_sided_p / 2)
-    else:
-        result["ttest_p"] = float(arr[0] < target) if n == 1 else 1.0
-
-    return result
-
-
 # ── Charts ────────────────────────────────────────────────────────────────────
 PALETTE = dict(
     bg="#0f1117", card="#1a1d27", accent="#6c63ff", accent2="#ff6584",
@@ -493,15 +455,9 @@ def build_charts(trial_results, out_dir, num_envs):
         ax.set_ylabel("# Environments", color=PALETTE["text"])
         ax.legend(facecolor=PALETTE["card"], edgecolor=PALETTE["grid"],
                   labelcolor=PALETTE["text"], fontsize=10)
-        # P-test analysis
-        ptest = compute_p_test(success_times)
-        ax.axvline(TARGET_TIME, color=PALETTE["fail"], lw=2.0, ls="-",
-                   label=f"Target {TARGET_TIME:.2f}s", zorder=5, alpha=0.8)
         info = (f"n = {success_count} successful / {total_eps} total   SR = {overall_sr:.1f}%\n"
                 f"mean = {mean_t:.2f}s   std = {std_t:.2f}s\n"
-                f"best = {success_times.min():.2f}s   worst = {success_times.max():.2f}s\n"
-                f"P(time < {TARGET_TIME}s) = {ptest['empirical_p']*100:.1f}%  "
-                f"(t-test p = {ptest['ttest_p']:.4f})")
+                f"best = {success_times.min():.2f}s   worst = {success_times.max():.2f}s")
         ax.text(0.97, 0.97, info, transform=ax.transAxes, fontsize=9,
                 va="top", ha="right", color=PALETTE["text"],
                 bbox=dict(boxstyle="round,pad=0.4", facecolor=PALETTE["card"],
@@ -721,35 +677,24 @@ def main():
         else:
             print(f"    Mean 3-Lap Time    : N/A (no completions)")
 
-        # Sim2real control quality metrics (over successful envs)
+        # Control profile metrics (over successful envs)
         s2r = {}
         if success_mask.any():
             sm = success_mask
-            s2r["mean_thrust"]     = float(raw["mean_thrust"][sm].mean())
-            s2r["std_thrust"]      = float(raw["std_thrust"][sm].mean())
-            s2r["mean_body_rate"]  = raw["mean_body_rate"][sm].mean(axis=0).tolist()   # [r, p, y]
-            s2r["rms_body_rate"]   = raw["rms_body_rate"][sm].mean(axis=0).tolist()
-            s2r["max_body_rate"]   = raw["max_body_rate"][sm].mean(axis=0).tolist()
-            s2r["mean_smoothness"] = float(raw["mean_smoothness"][sm].mean())
-            s2r["max_tilt_deg"]    = float(raw["max_tilt_deg"][sm].mean())
-            s2r["p95_tilt_deg"]    = float(np.percentile(raw["max_tilt_deg"][sm], 95))
+            tilt_arr = raw["max_tilt_deg"][sm]
+            s2r["tilt_mean_deg"]  = float(tilt_arr.mean())
+            s2r["tilt_p95_deg"]   = float(np.percentile(tilt_arr, 95))
+            s2r["tilt_worst_deg"] = float(tilt_arr.max())
+            # Peak body rate across axes, per successful env — then fraction near limit
+            peak_br_per_env = np.max(raw["max_body_rate"][sm], axis=1)  # max of |roll|,|pitch|,|yaw|
+            s2r["peak_rate_saturated_pct"] = float((peak_br_per_env > 0.9).mean() * 100)
+            s2r["peak_rate_mean"]          = float(peak_br_per_env.mean())
 
-            print(f"    ── Sim2Real Readiness ──")
-            print(f"    Mean thrust cmd    : {s2r['mean_thrust']:.3f} (0=off, 1=max; hover≈0.5)")
-            print(f"    Thrust variability  : σ={s2r['std_thrust']:.3f}")
-            print(f"    Mean |body rate|    : roll={s2r['mean_body_rate'][0]:.3f}  pitch={s2r['mean_body_rate'][1]:.3f}  yaw={s2r['mean_body_rate'][2]:.3f}")
-            print(f"    RMS body rate       : roll={s2r['rms_body_rate'][0]:.3f}  pitch={s2r['rms_body_rate'][1]:.3f}  yaw={s2r['rms_body_rate'][2]:.3f}")
-            print(f"    Peak |body rate|    : roll={s2r['max_body_rate'][0]:.3f}  pitch={s2r['max_body_rate'][1]:.3f}  yaw={s2r['max_body_rate'][2]:.3f}")
-            print(f"    Action smoothness   : {s2r['mean_smoothness']:.4f}  (lower=smoother)")
-            print(f"    Max tilt (mean/p95) : {s2r['max_tilt_deg']:.1f}° / {s2r['p95_tilt_deg']:.1f}°")
-
-            # Warnings
-            if s2r['p95_tilt_deg'] > 60:
-                print(f"    ⚠️  HIGH TILT: 95th percentile > 60° — risky for real flight")
-            if max(s2r['max_body_rate']) > 0.9:
-                print(f"    ⚠️  SATURATED BODY RATE: near ±1.0 limit — policy may be too aggressive")
-            if s2r['mean_smoothness'] > 0.5:
-                print(f"    ⚠️  JERKY COMMANDS: high action delta — may cause oscillation in real")
+            print(f"    ── Control profile ──")
+            print(f"    Max tilt angle     : mean={s2r['tilt_mean_deg']:.0f}°  "
+                  f"p95={s2r['tilt_p95_deg']:.0f}°  worst={s2r['tilt_worst_deg']:.0f}°")
+            print(f"    Peak body-rate     : mean={s2r['peak_rate_mean']:.2f} of max  "
+                  f"({s2r['peak_rate_saturated_pct']:.0f}% of envs pegged >0.9)")
 
         trial_results.append({
             "trial": t_idx + 1,
@@ -770,12 +715,11 @@ def main():
     valid_times  = [r["mean_3lap_time"] for r in trial_results if not np.isnan(r["mean_3lap_time"])]
     overall_time = float(np.mean(valid_times)) if valid_times else float("nan")
 
-    # Pool all successful times for p-test
+    # Pool all successful 3-lap times for overall stats
     all_success_times = np.concatenate([
         np.array(r["raw_time"])[np.array(r["raw_laps"]) >= 3]
         for r in trial_results
     ]) if trial_results else np.array([])
-    ptest = compute_p_test(all_success_times)
 
     print(f"\n{'#'*60}")
     print(f"  OVERALL SUMMARY")
@@ -783,58 +727,31 @@ def main():
     print(f"  Trials:        {args_cli.num_trials}")
     print(f"  Envs/trial:    {args_cli.num_envs}  (each with independent 3-param DR)")
     print(f"  Total episodes:{args_cli.num_trials * args_cli.num_envs}")
-    print(f"  Overall SR:    {overall_sr:.1f}%")
-    print(f"  Mean 3-lap:    " + (f"{overall_time:.2f}s" if not np.isnan(overall_time) else "N/A"))
-    print()
-    print(f"  ── P-Test (target = {TARGET_TIME}s) ──")
-    print(f"  P(time < {TARGET_TIME}s):  {ptest['empirical_p']*100:.1f}%  ({int(ptest['empirical_p']*ptest['n'])}/{ptest['n']} runs beat target)")
-    print(f"  t-test p-value:     {ptest['ttest_p']:.6f}  ({'✅ significant' if ptest['ttest_p'] < 0.05 else '❌ not significant'})")
-    if ptest['mean'] is not None:
-        print(f"  Sample mean:        {ptest['mean']:.2f}s  (target - mean = {TARGET_TIME - ptest['mean']:.2f}s)")
+    print(f"  Overall SR:    {overall_sr:.1f}%  ({int(len(all_success_times))}/{args_cli.num_trials * args_cli.num_envs} envs hit 3 laps)")
+    if len(all_success_times) > 0:
+        print(f"  3-lap time:    mean={all_success_times.mean():.2f}s  "
+              f"std={all_success_times.std():.2f}s  "
+              f"best={all_success_times.min():.2f}s  "
+              f"worst={all_success_times.max():.2f}s")
+    else:
+        print(f"  3-lap time:    N/A (no completions)")
     print()
     for r in trial_results:
-        v = "✅" if r["success_rate_pct"] >= 80 else ("⚠️ " if r["success_rate_pct"] >= 50 else "❌")
         ts = f"{r['mean_3lap_time']:.2f}s" if not np.isnan(r["mean_3lap_time"]) else "  N/A"
-        print(f"  {v} T{r['trial']:02d}  SR={r['success_rate_pct']:5.1f}%  time={ts}")
+        print(f"  T{r['trial']:02d}  SR={r['success_rate_pct']:5.1f}%  time={ts}")
 
-    verdict = (
-        "✅ Policy is ROBUST for TA evaluation!" if overall_sr >= 80
-        else "⚠️  Moderately robust — consider more training." if overall_sr >= 50
-        else "❌ Fragile under DR — needs improvement."
-    )
-    print(f"\n  {verdict}")
-
-    # Aggregate sim2real metrics across trials
+    # Aggregate control-profile metrics across trials
     s2r_trials = [r["sim2real"] for r in trial_results if r.get("sim2real")]
     if s2r_trials:
-        print(f"\n  ── Sim2Real Readiness (pooled) ──")
-        avg_smooth = float(np.mean([s["mean_smoothness"] for s in s2r_trials]))
-        avg_tilt   = float(np.mean([s["max_tilt_deg"] for s in s2r_trials]))
-        avg_p95    = float(np.mean([s["p95_tilt_deg"] for s in s2r_trials]))
-        avg_thrust = float(np.mean([s["mean_thrust"] for s in s2r_trials]))
-        avg_rms_br = np.mean([s["rms_body_rate"] for s in s2r_trials], axis=0)
-        avg_max_br = np.mean([s["max_body_rate"] for s in s2r_trials], axis=0)
-        print(f"  Thrust:       mean={avg_thrust:.3f}")
-        print(f"  RMS body rate: R={avg_rms_br[0]:.3f} P={avg_rms_br[1]:.3f} Y={avg_rms_br[2]:.3f}")
-        print(f"  Peak body rate: R={avg_max_br[0]:.3f} P={avg_max_br[1]:.3f} Y={avg_max_br[2]:.3f}")
-        print(f"  Smoothness:   {avg_smooth:.4f}")
-        print(f"  Max tilt:     mean={avg_tilt:.1f}° p95={avg_p95:.1f}°")
-
-        # Overall sim2real verdict
-        issues = []
-        if avg_p95 > 60:
-            issues.append("high tilt (>60°)")
-        if max(avg_max_br) > 0.9:
-            issues.append("saturated body rates")
-        if avg_smooth > 0.5:
-            issues.append("jerky commands")
-        if avg_thrust < 0.3 or avg_thrust > 0.7:
-            issues.append(f"unusual thrust ({avg_thrust:.2f})")
-
-        if not issues:
-            print(f"  ✅ Control profile looks SAFE for real deployment")
-        else:
-            print(f"  ⚠️  Concerns: {', '.join(issues)}")
+        print(f"\n  ── Control profile (pooled) ──")
+        avg_tilt_mean  = float(np.mean([s["tilt_mean_deg"]  for s in s2r_trials]))
+        avg_tilt_p95   = float(np.mean([s["tilt_p95_deg"]   for s in s2r_trials]))
+        avg_tilt_worst = float(np.mean([s["tilt_worst_deg"] for s in s2r_trials]))
+        avg_peak_rate  = float(np.mean([s["peak_rate_mean"] for s in s2r_trials]))
+        avg_sat_pct    = float(np.mean([s["peak_rate_saturated_pct"] for s in s2r_trials]))
+        print(f"  Max tilt:       mean={avg_tilt_mean:.0f}°  p95={avg_tilt_p95:.0f}°  worst={avg_tilt_worst:.0f}°")
+        print(f"  Peak body-rate: mean={avg_peak_rate:.2f} of max  "
+              f"({avg_sat_pct:.0f}% of envs pegged >0.9)")
 
     print(f"{'#'*60}\n")
 
@@ -854,21 +771,18 @@ def main():
 
     json_path = os.path.join(out_dir, "batch_eval_results.json")
     with open(json_path, "w") as f:
-        json.dump({
-            "overall": {
-                "success_rate_pct": overall_sr,
-                "mean_3lap_time": overall_time if not np.isnan(overall_time) else None,
-                "p_test": {
-                    "target_time": ptest["target"],
-                    "empirical_p_beat_target": ptest["empirical_p"],
-                    "ttest_p_value": ptest["ttest_p"],
-                    "n_samples": ptest["n"],
-                    "sample_mean": ptest["mean"],
-                    "sample_std": ptest["std"],
-                },
-            },
-            "trials": json_out},
-            f, indent=2)
+        overall_entry = {
+            "success_rate_pct": overall_sr,
+            "mean_3lap_time": overall_time if not np.isnan(overall_time) else None,
+        }
+        if len(all_success_times) > 0:
+            overall_entry.update({
+                "best_3lap_time":  float(all_success_times.min()),
+                "worst_3lap_time": float(all_success_times.max()),
+                "std_3lap_time":   float(all_success_times.std()),
+                "n_3lap_success":  int(len(all_success_times)),
+            })
+        json.dump({"overall": overall_entry, "trials": json_out}, f, indent=2)
     print(f"[INFO] JSON → {json_path}")
 
     # ── Charts ────────────────────────────────────────────────────────────────

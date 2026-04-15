@@ -1256,9 +1256,9 @@ class CircleQuadcopterStrategy:
             default_root_state[:, 1] = initial_y
             default_root_state[:, 2] = initial_z
 
-            # Velocity along spline tangent (Option C: 0.5–1.5 m/s)
-            vel_min = getattr(self.cfg, 'spline_vel_min', 0.5)
-            vel_max = getattr(self.cfg, 'spline_vel_max', 1.5)
+            # Velocity along spline tangent: match real flight speed (~2.9 m/s avg)
+            vel_min = getattr(self.cfg, 'spline_vel_min', 1.0)
+            vel_max = getattr(self.cfg, 'spline_vel_max', 3.0)
             speed = torch.empty(n_reset, device=self.device).uniform_(vel_min, vel_max)
             default_root_state[:, 7:10] = spawn_tangent * speed.unsqueeze(1)
             default_root_state[:, 10:13] = 0.0  # zero angular velocity
