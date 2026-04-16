@@ -6,7 +6,7 @@
 #   - gate_side=0.7
 #   - light delta-action penalty (-0.1)
 #   - no spline reset / no extra mass or motor-tau DR
-#   - 1-step action latency
+#   - 2-step action latency
 #
 # Usage:
 #   ./scripts/run/train_circle.sh [max_iterations] [num_envs]

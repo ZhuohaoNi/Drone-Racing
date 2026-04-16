@@ -1,45 +1,46 @@
 {
   "bag": "/home/peterni/Documents/ese6510/ese651_project/rosbags/group30_cyclev2",
-  "namespace": null,
+  "namespace": "crazy_jirl_b3",
   "sim_nominal": {
-    "thrust_to_weight": 1.9,
-    "k_aero_xy": 0.01,
-    "k_aero_z": 0.01,
-    "mass_kg": 0.033,
-    "g": 9.81
+    "thrust_to_weight": 3.15,
+    "k_aero_xy": 9.1785e-07,
+    "k_aero_z": 1.0311e-06,
+    "mass_kg": 0.038,
+    "g": 9.81,
+    "k_eta": 2.3e-08
   },
   "identified": {
-    "twr_est": 1.3851399217182414,
-    "twr_std": 0.49167993973694446,
-    "k_aero_xy_est": 0.09062320339063727,
-    "k_aero_xy_std": 0.025061551346918332,
+    "twr_est": null,
+    "twr_std": null,
+    "k_aero_xy_est": null,
+    "k_aero_xy_std": null,
     "pid_lag_s": {
-      "roll": 1.03,
-      "pitch": 1.08,
-      "yaw": 0.06
+      "roll": 0.05,
+      "pitch": 0.05,
+      "yaw": 0.05
     },
-    "mean_lag_s": 0.7233333333333335
+    "mean_lag_s": 0.05
   },
   "suggested_dr": {
     "TWR": {
-      "identified_scale": 0.729,
-      "suggested_range_lo": 0.211,
-      "suggested_range_hi": 1.247,
+      "identified_scale": null,
+      "suggested_range_lo": 0.9,
+      "suggested_range_hi": 1.1,
       "current_sim": "\u00b115% \u2192 [0.85, 1.15]\u00d7nominal",
-      "note": "Real TWR is 0.73\u00d7 nominal \u2014 recenter DR here"
+      "note": "TWR not confidently identified from this bag \u2014 keep current nominal-centered range"
     },
     "k_aero_xy": {
-      "identified_scale": 9.062,
-      "suggested_range_lo": 4.05,
-      "suggested_range_hi": 14.075,
+      "identified_scale": null,
+      "suggested_range_lo": 0.9,
+      "suggested_range_hi": 1.1,
       "current_sim": "0.2\u20133.0\u00d7 nominal",
-      "note": "Real drag is 9.06\u00d7 nominal \u2014 tighten DR center"
+      "note": "Drag not confidently identified from this bag \u2014 keep current nominal-centered range"
     },
     "action_latency_steps": {
-      "identified_steps": 3,
-      "identified_lag_ms": 723,
+      "identified_steps": 2,
+      "identified_lag_ms": 50,
       "current_sim": "0\u20132 steps (V3) / none (V4+)",
-      "note": "Real lag \u2248 3 policy steps \u2014 use this as max_latency"
+      "note": "Real lag \u2248 2 policy steps \u2014 use this as max_latency"
     }
   }
 }

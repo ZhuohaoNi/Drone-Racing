@@ -45,7 +45,7 @@ PPO_DEFAULTS = {
 
 # ---------- Environment config defaults ----------
 ENV_DEFAULTS = {
-    "action_latency_max": 1,               # fixed baseline: conservative 1-step action delay
+    "action_latency_max": 2,               # fixed baseline: 2-step action delay matches current bag-derived cluster
     "mass_variation": 0.0,                 # fixed baseline: disable extra DR until re-identified
     "motor_tau_scale_min": 1.0,            # fixed baseline: no motor-tau DR
     "motor_tau_scale_max": 1.0,

@@ -129,7 +129,7 @@ class GateModelCfg:
 class QuadcopterEnvCfg(DirectRLEnvCfg):
     use_wall = False
     track_name = 'circle'
-    action_latency_max = 1          # fixed baseline: 1 policy step matches current bag-derived lag
+    action_latency_max = 2          # fixed baseline: 2 policy steps matches current bag-derived lag cluster
     mass_variation = 0.0            # fixed baseline: disable until re-identified on fresh bags
     motor_tau_scale_min = 1.0       # fixed baseline: no extra motor-tau DR
     motor_tau_scale_max = 1.0

@@ -29,7 +29,7 @@ This is now the default training baseline in code:
 | `cmd_reg_rp_scale` | **-1.0** |
 | `cmd_reg_yaw_scale` | **-0.5** |
 | `cmd_smoothness_scale` | **-0.1** |
-| `action_latency_max` | **1** |
+| `action_latency_max` | **2** |
 | `obs_latency_prob` | **0.0** |
 | `mass_variation` | **0.0** |
 | `motor_tau_scale_min/max` | **1.0 / 1.0** |
@@ -41,7 +41,7 @@ This is now the default training baseline in code:
 2. Keeps V6's `gate_side=0.7` safety margin.
 3. Keeps V6-Smooth's light `cmd_smoothness=-0.1`, which gave the best real consistency without the V6-Smooth2 slowdown.
 4. Removes spline reset and extra mass/tau DR, which consistently failed to show real-world benefit.
-5. Uses only a conservative 1-step action latency. Observation latency is left off for the baseline because it only became active after the bug fix and needs a clean ablation later.
+5. Uses a conservative 2-step action latency, which better matches the current bag-derived lag cluster. Observation latency is left off for the baseline because it only became active after the bug fix and needs a clean ablation later.
 
 ### Status
 
