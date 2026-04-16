@@ -20,7 +20,7 @@ import argparse
 import json
 from itertools import product
 
-# ---------- Default reward scales (Circle-V6 Sparse Baseline) ----------
+# ---------- Default reward scales (Fixed sim2real baseline) ----------
 REWARD_DEFAULTS = {
     "gate_pass_reward_scale": 200.0,
     "death_cost": -100.0,
@@ -29,9 +29,10 @@ REWARD_DEFAULTS = {
     "cmd_reg_yaw_scale": -0.5,
     "crash_reward_scale": -2.0,
     "crash_contact_scale": -0.1,
+    "cmd_smoothness_scale": -0.1,
 }
 
-# ---------- Default PPO config (Circle-V6 baseline) ----------
+# ---------- Default PPO config (Fixed sim2real baseline) ----------
 PPO_DEFAULTS = {
     "num_steps_per_env": 64,
     "gamma": 0.99,
@@ -42,70 +43,61 @@ PPO_DEFAULTS = {
     "learning_rate": 1e-4,
 }
 
-# ---------- Environment config defaults (Circle-V6) ----------
+# ---------- Environment config defaults ----------
 ENV_DEFAULTS = {
-    "action_latency_max": 0,               # V4: disabled (V2 had none)
-    "mass_variation": 0.05,                # ±5% mass randomization (moderate)
-    "motor_tau_scale_min": 0.7,            # motor time constant DR lower bound (moderate)
-    "motor_tau_scale_max": 1.3,            # motor time constant DR upper bound (moderate)
-    "obs_latency_prob": 0.0,              # V4: disabled
-    "use_spline_reset": True,              # spline-based reset with velocity init
-    "spline_vel_min": 1.0,                # V5: raised from 0.5 (real avg ~2.9 m/s)
-    "spline_vel_max": 3.0,                # V5: raised from 1.5
+    "action_latency_max": 2,               # fixed baseline: 2-step action delay matches current bag-derived cluster
+    "mass_variation": 0.0,                 # fixed baseline: disable extra DR until re-identified
+    "motor_tau_scale_min": 1.0,            # fixed baseline: no motor-tau DR
+    "motor_tau_scale_max": 1.0,
+    "obs_latency_prob": 0.0,               # fixed baseline: keep off; ablate separately
+    "use_spline_reset": False,             # fixed baseline: replay + ground + linear interp resets
+    "spline_vel_min": 0.5,                 # inactive unless use_spline_reset=True
+    "spline_vel_max": 1.5,
 }
 
 # ---------- Sweep configurations ----------
 # Each entry: (name, reward_overrides, ppo_overrides, env_overrides)
 # env_overrides is optional (defaults to {}) for backward compat
-#
-# V6 sweep: 4 configs to run in parallel.
-# Strategy: V6 full (all rosbag-informed changes) vs ablating the 3 change groups.
-# The V6 changes live in quadcopter_strategies.py directly (TWR ±20%, yaw PID ±50%/±70%,
-# obs noise 0.10/0.05, angular velocity resets). Sweep env_overrides can only control
-# parameters exposed via ENV_DEFAULTS. The obs noise and DR range changes are hard-coded
-# in the strategy, so ablations revert them via comments in the config name for tracking.
-#
-# NOTE: configs 1-3 ablate by reverting to V5 values. Since TWR/yaw PID/obs noise are
-# hard-coded in CircleQuadcopterStrategy, these ablations require temporarily editing
-# the strategy file. Use --dry-run to see what each config tests, then manually revert
-# the relevant constants for ablation runs if needed.
-#
-# For the default 4-config parallel run: all 4 use the V6 strategy code as-is.
-# The ablation is done via env_overrides where possible.
 SWEEP_CONFIGS = [
-    # ---- 2x2 factorial: (V2 base vs V4/V5 base) x (default vs tight cmd) ----
-    # All 4 use V6 DR code (TWR ±20%, yaw PID ±50%/±70%, obs noise 0.10/0.05m, ang vel resets)
-    #
-    # V2 base: no spline reset, no mass/tau DR — proven best in real (lowest body rate,
-    #          best consistency std=0.011s, best gate clearance 0.443m)
-    # V4/V5 base: spline reset + mass ±5% + motor tau 0.7-1.3x + vel 1.0-3.0 m/s
+    # 0: Fixed post-fix baseline
+    ("s2r_fixed_baseline", {}, {}, {}),
 
-    # 0: V2 base + V6 DR — minimal env changes, just better DR coverage
-    ("s2r_v6_v2base", {}, {}, {
-        "use_spline_reset": False,
-        "mass_variation": 0.0,
-        "motor_tau_scale_min": 1.0,
-        "motor_tau_scale_max": 1.0,
+    # --- Ablation: add back removed DR components one at a time ---
+    # 1: Add moderate mass randomization
+    ("s2r_fixed_plus_mass_dr", {}, {}, {"mass_variation": 0.05}),
+
+    # 2: Add moderate motor tau randomization
+    ("s2r_fixed_plus_tau_dr", {}, {}, {"motor_tau_scale_min": 0.7, "motor_tau_scale_max": 1.3}),
+
+    # 3: Add both mass and motor tau randomization
+    ("s2r_fixed_plus_mass_tau_dr", {}, {}, {
+        "mass_variation": 0.05,
+        "motor_tau_scale_min": 0.7,
+        "motor_tau_scale_max": 1.3,
     }),
 
-    # 1: V2 base + V6 DR + tight cmd — V2 was smoothest; does noisier obs need more reg?
-    ("s2r_v6_v2base_tight_cmd", {
+    # --- Reset / latency ablation ---
+    # 4: Turn on observation latency now that it is implemented
+    ("s2r_fixed_obs_latency_p01", {}, {}, {"obs_latency_prob": 0.1}),
+
+    # 5: Add spline reset back on top of the fixed baseline
+    ("s2r_fixed_plus_spline", {}, {}, {"use_spline_reset": True}),
+
+    # --- Reward tuning ---
+    # 6: Stronger gate_pass
+    ("s2r_fixed_gate300", {
+        "gate_pass_reward_scale": 300.0,
+    }, {}, {}),
+
+    # 7: Tighter cmd reg
+    ("s2r_fixed_tight_cmd", {
         "cmd_reg_rp_scale": -1.5,
         "cmd_reg_yaw_scale": -0.8,
-    }, {}, {
-        "use_spline_reset": False,
-        "mass_variation": 0.0,
-        "motor_tau_scale_min": 1.0,
-        "motor_tau_scale_max": 1.0,
-    }),
+    }, {}, {}),
 
-    # 2: V4/V5 base + V6 DR — spline reset + mass/tau DR + rosbag DR
-    ("s2r_v6_v4base", {}, {}, {}),
-
-    # 3: V4/V5 base + V6 DR + tight cmd
-    ("s2r_v6_v4base_tight_cmd", {
-        "cmd_reg_rp_scale": -1.5,
-        "cmd_reg_yaw_scale": -0.8,
+    # 8: More forgiving crash cost
+    ("s2r_fixed_forgiving", {
+        "death_cost": -50.0,
     }, {}, {}),
 ]
 

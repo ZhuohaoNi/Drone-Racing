@@ -1,0 +1,46 @@
+{
+  "bag": "/home/peterni/Documents/ese6510/ese651_project/rosbags/group30_cyclev2",
+  "namespace": "crazy_jirl_b3",
+  "sim_nominal": {
+    "thrust_to_weight": 3.15,
+    "k_aero_xy": 9.1785e-07,
+    "k_aero_z": 1.0311e-06,
+    "mass_kg": 0.038,
+    "g": 9.81,
+    "k_eta": 2.3e-08
+  },
+  "identified": {
+    "twr_est": null,
+    "twr_std": null,
+    "k_aero_xy_est": null,
+    "k_aero_xy_std": null,
+    "pid_lag_s": {
+      "roll": 0.05,
+      "pitch": 0.05,
+      "yaw": 0.05
+    },
+    "mean_lag_s": 0.05
+  },
+  "suggested_dr": {
+    "TWR": {
+      "identified_scale": null,
+      "suggested_range_lo": 0.9,
+      "suggested_range_hi": 1.1,
+      "current_sim": "\u00b115% \u2192 [0.85, 1.15]\u00d7nominal",
+      "note": "TWR not confidently identified from this bag \u2014 keep current nominal-centered range"
+    },
+    "k_aero_xy": {
+      "identified_scale": null,
+      "suggested_range_lo": 0.9,
+      "suggested_range_hi": 1.1,
+      "current_sim": "0.2\u20133.0\u00d7 nominal",
+      "note": "Drag not confidently identified from this bag \u2014 keep current nominal-centered range"
+    },
+    "action_latency_steps": {
+      "identified_steps": 2,
+      "identified_lag_ms": 50,
+      "current_sim": "0\u20132 steps (V3) / none (V4+)",
+      "note": "Real lag \u2248 2 policy steps \u2014 use this as max_latency"
+    }
+  }
+}

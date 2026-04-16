@@ -1,0 +1,4 @@
+bag,laps_strict,seq_breaks,best_lap,mean_lap,median_lap,std_lap,takeoff_to_3,fastest_3lap,path_per_lap,mean_speed,max_speed,mean_tilt,max_tilt,mean_br,max_br,mean_thrust,max_thrust
+group30_cyclev2,15,0,2.525,2.697,2.596,0.297,8.151,7.637,7.58,2.81,3.73,34.3,50.3,126.54,244.61,0.77,1.17
+group30_cyclev3,16,0,2.409,2.435,2.431,0.020,7.927,7.273,7.08,2.91,3.97,37.8,49.1,154.59,235.07,0.71,1.17
+group30_cyclev4,3,4,2.602,2.856,2.949,0.182,19.068,8.568,17.04,2.90,4.05,32.1,51.2,93.72,243.48,0.67,1.17

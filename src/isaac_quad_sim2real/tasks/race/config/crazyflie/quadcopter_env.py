@@ -122,21 +122,21 @@ class QuadcopterEnvWindow(BaseEnvWindow):
 class GateModelCfg:
     usd_path: str = "./usd/gate.usda"
     prim_name: str = "gate"
-    gate_side: float = 1.0
-    scale = [1.0, gate_side, gate_side]
+    gate_side: float = 0.7  # V6: reward boundary only; physical mesh stays at 1.0
+    scale = [1.0, 1.0, 1.0]  # Physical gate mesh always full size; gate_side only affects pass check
 
 @configclass
 class QuadcopterEnvCfg(DirectRLEnvCfg):
     use_wall = False
     track_name = 'circle'
-    action_latency_max = 2
-    mass_variation = 0.1            # ±10% mass randomization (0 = disabled)
-    motor_tau_scale_min = 0.5       # motor time constant randomization range
-    motor_tau_scale_max = 2.0
-    obs_latency_prob = 0.3          # probability of using 1-step-old observation
-    use_spline_reset = True         # spline-based reset positions + velocity init
-    spline_vel_min = 0.5            # min velocity along spline tangent (m/s)
-    spline_vel_max = 1.5            # max velocity along spline tangent (m/s)
+    action_latency_max = 2          # fixed baseline: 2 policy steps matches current bag-derived lag cluster
+    mass_variation = 0.0            # fixed baseline: disable until re-identified on fresh bags
+    motor_tau_scale_min = 1.0       # fixed baseline: no extra motor-tau DR
+    motor_tau_scale_max = 1.0
+    obs_latency_prob = 0.0          # fixed baseline: keep off; re-ablate separately now that it works
+    use_spline_reset = False        # fixed baseline: rely on replay + ground + linear interp resets
+    spline_vel_min = 0.5            # only used when use_spline_reset=True
+    spline_vel_max = 1.5
 
     # env
     episode_length_s = 30.0             # episode_length = episode_length_s / dt / decimation

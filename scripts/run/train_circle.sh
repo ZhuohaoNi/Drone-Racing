@@ -1,8 +1,12 @@
 #!/bin/bash
 
-# Train a safe circle track policy for sim2real deployment.
-# Uses the standard reward structure but on the circle track.
-# This is the baseline -- use train_circle_safe.sh for the sim2real-tuned version.
+# Train the fixed circle-track sim2real baseline.
+# Default config now uses:
+#   - sparse V3-style reward core
+#   - gate_side=0.7
+#   - light delta-action penalty (-0.1)
+#   - no spline reset / no extra mass or motor-tau DR
+#   - 2-step action latency
 #
 # Usage:
 #   ./scripts/run/train_circle.sh [max_iterations] [num_envs]

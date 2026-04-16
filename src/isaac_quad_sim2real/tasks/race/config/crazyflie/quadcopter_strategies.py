@@ -725,20 +725,27 @@ class CircleQuadcopterStrategy:
         # Used for reset position/velocity sampling when use_spline_reset=True.
         self._build_reference_spline()
 
+        # Delta action smoothness tracking (for cmd_smoothness_scale reward)
+        self._prev_actions = torch.zeros(
+            self.num_envs, self.cfg.action_space, dtype=torch.float, device=self.device
+        )
+        self._prev_obs = torch.zeros(self.num_envs, 40, dtype=torch.float, device=self.device)
+        self._prev_obs_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
         if self.cfg.is_train:
             self._randomize_dynamics(torch.arange(self.num_envs, device=self.device))
         else:
             self._set_default_dynamics(torch.arange(self.num_envs, device=self.device))
 
     def _randomize_dynamics(self, env_ids: torch.Tensor):
-        """V6 DR: wider TWR ±20%, yaw PID kp ±50% / kd ±70% (rosbag: yaw tracking 2-3x worse),
-        plus V4 mass ±5% and motor tau 0.7-1.3x."""
+        """V4 DR: V2 ranges for existing params (TWR ±15%, Aero 0.2-3.0x, PID kp/ki ±35%, kd ±50%),
+        plus moderate mass ±5% and motor tau 0.7-1.3x."""
         n = len(env_ids)
         cfg = self.cfg
 
-        # TWR ±20% (widened from ±15%; real effective TWR varies more with TA 30% DR on top)
+        # TWR ±15% (unchanged from V2)
         self.env._thrust_to_weight[env_ids] = torch.empty(n, device=self.device).uniform_(
-            cfg.thrust_to_weight * 0.80, cfg.thrust_to_weight * 1.20)
+            cfg.thrust_to_weight * 0.85, cfg.thrust_to_weight * 1.15)
 
         # Aero drag 0.2-3.0x (V2 range — wider than V3/V4)
         k_xy_min, k_xy_max = cfg.k_aero_xy * 0.2, cfg.k_aero_xy * 3.0
@@ -755,10 +762,9 @@ class CircleQuadcopterStrategy:
         self.env._kd_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_rp * 0.5, cfg.kd_omega_rp * 1.5)
         self.env._kd_omega[env_ids, 1] = self.env._kd_omega[env_ids, 0]
 
-        # Yaw PID: wider DR (rosbag shows yaw tracking error 2-3x worse than roll/pitch)
-        self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_y * 0.50, cfg.kp_omega_y * 1.50)
-        self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_y * 0.50, cfg.ki_omega_y * 1.50)
-        self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_y * 0.30, cfg.kd_omega_y * 1.70)
+        self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_y * 0.65, cfg.kp_omega_y * 1.35)
+        self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_y * 0.65, cfg.ki_omega_y * 1.35)
+        self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_y * 0.5, cfg.kd_omega_y * 1.5)
 
         # Mass randomization: ±5% (new, moderate — V4 used ±10%)
         mass_var = getattr(cfg, 'mass_variation', 0.05)
@@ -1059,11 +1065,16 @@ class CircleQuadcopterStrategy:
             cmd_reg = (self.env._actions[:, 1] ** 2 + self.env._actions[:, 2] ** 2) * self.env.rew['cmd_reg_rp_scale'] \
                     + (self.env._actions[:, 3] ** 2) * self.env.rew['cmd_reg_yaw_scale']
 
+            # Delta action smoothness: penalize abrupt changes between consecutive actions
+            delta_action = ((self.env._actions - self._prev_actions) ** 2).sum(dim=1)
+            cmd_smoothness = delta_action * self.env.rew['cmd_smoothness_scale']
+            self._prev_actions = self.env._actions.clone()
+
             r_gate = gate_pass * self.env.rew['gate_pass_reward_scale']
             r_lap_incomplete = self.env.rew['lap_incomplete_penalty_scale']  # constant per-step cost
             r_crash = contact_penalty * self.env.rew['crash_contact_scale']
 
-            reward = r_gate + r_lap_incomplete + cmd_reg + r_crash
+            reward = r_gate + r_lap_incomplete + cmd_reg + cmd_smoothness + r_crash
 
             # Death cost override on terminal episodes
             reward = torch.where(self.env.reset_terminated,
@@ -1140,14 +1151,24 @@ class CircleQuadcopterStrategy:
         # Simulates Vicon measurement noise, velocity estimation error, and gate calibration error.
         if self.cfg.is_train:
             noise_std = torch.tensor(
-                [0.10] * 3          # lin_vel_b: ±0.10 m/s (rosbag: up to 0.22 m/s obs-odom error during turns)
+                [0.05] * 3          # lin_vel_b: ±0.05 m/s (Vicon velocity from numerical diff)
                 + [0.01] * 9        # rot_matrix: ±0.01 (small attitude noise)
-                + [0.05] * 12       # curr_gate_corners: ±0.05m (hand-measured gates + Vicon calibration)
-                + [0.05] * 12       # next_gate_corners: ±0.05m
+                + [0.02] * 12       # curr_gate_corners: ±0.02m (gate calibration)
+                + [0.02] * 12       # next_gate_corners: ±0.02m
                 + [0.0] * 4,        # prev_action: no noise (known exactly)
                 device=self.device,
             )
-            obs = obs + torch.randn_like(obs) * noise_std
+            current_obs = obs + torch.randn_like(obs) * noise_std
+
+            latency_prob = float(getattr(self.cfg, "obs_latency_prob", 0.0))
+            if latency_prob > 0.0:
+                use_prev = (torch.rand(self.num_envs, device=self.device) < latency_prob) & self._prev_obs_valid
+                obs = torch.where(use_prev.unsqueeze(1), self._prev_obs, current_obs)
+            else:
+                obs = current_obs
+
+            self._prev_obs.copy_(current_obs)
+            self._prev_obs_valid[:] = True
 
         return {"policy": obs}
 
@@ -1262,8 +1283,7 @@ class CircleQuadcopterStrategy:
             vel_max = getattr(self.cfg, 'spline_vel_max', 3.0)
             speed = torch.empty(n_reset, device=self.device).uniform_(vel_min, vel_max)
             default_root_state[:, 7:10] = spawn_tangent * speed.unsqueeze(1)
-            # Nonzero angular velocity (rosbag: drone always has body rates during flight)
-            default_root_state[:, 10:13] = torch.empty(n_reset, 3, device=self.device).uniform_(-1.0, 1.0)
+            default_root_state[:, 10:13] = 0.0  # zero angular velocity
 
             # Yaw aligned to spline tangent + noise
             initial_yaw = torch.atan2(spawn_tangent[:, 1], spawn_tangent[:, 0])
@@ -1368,6 +1388,9 @@ class CircleQuadcopterStrategy:
         self.env._n_gates_passed[env_ids] = 0
         self._lap_start_step[env_ids] = 0
         self._steps_since_gate_pass[env_ids] = 999
+        self._prev_actions[env_ids] = 0.0
+        self._prev_obs[env_ids] = 0.0
+        self._prev_obs_valid[env_ids] = False
         if self.cfg.is_train:
             effective_replay_mask = replay_mask & (~ground_mask)
             spline_mask = (~replay_mask) & (~ground_mask)

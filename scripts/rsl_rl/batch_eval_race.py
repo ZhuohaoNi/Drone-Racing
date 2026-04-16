@@ -605,6 +605,7 @@ def main():
         'cmd_reg_yaw_scale':             0.0,
         'crash_reward_scale':            0.0,
         'crash_contact_scale':           0.0,
+        'cmd_smoothness_scale':          0.0,
     }
 
     env = gym.make(args_cli.task, cfg=env_cfg, rewards=env_cfg.rewards)
