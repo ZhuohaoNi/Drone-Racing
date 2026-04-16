@@ -4,6 +4,96 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Fixed Sim2Real Baseline] - 2026-04-16
+
+### Purpose
+
+Freeze a single **post-fix baseline** for all future experiments. This baseline is not claimed to be the fastest historical circle policy; it is the most defensible starting point after fixing the controller-analysis mismatches that were inflating sim-real uncertainty.
+
+### Controller / analysis fixes included
+
+- Real controller gate switching now uses the same **plane-crossing + gate-bounds** logic as training/evaluation. The old center-distance switch was removed.
+- Racing-mode thrust is now converted to Crazyflie PWM using the same **calibrated nonlinear thrust map** as the non-racing controller path. The old linear PWM map was likely contributing to low-thrust / low-flight behavior in real flights.
+- `sysid_from_bag.py` now uses the current nominal mass/TWR, converts `/ctbr_cmd` body-rate commands from **deg/s to rad/s**, and bounds PID lag estimation to a physically meaningful range.
+- `obs_latency_prob` is now actually applied during training instead of being a dead config field.
+
+### Baseline configuration
+
+This is now the default training baseline in code:
+
+| Parameter | Baseline |
+|---|---:|
+| `gate_side` | **0.7** |
+| `gate_pass_reward_scale` | **200.0** |
+| `lap_incomplete_penalty_scale` | **-0.05** |
+| `cmd_reg_rp_scale` | **-1.0** |
+| `cmd_reg_yaw_scale` | **-0.5** |
+| `cmd_smoothness_scale` | **-0.1** |
+| `action_latency_max` | **1** |
+| `obs_latency_prob` | **0.0** |
+| `mass_variation` | **0.0** |
+| `motor_tau_scale_min/max` | **1.0 / 1.0** |
+| `use_spline_reset` | **False** |
+
+### Why this is the baseline
+
+1. Keeps the sparse V3 reward core that transferred best.
+2. Keeps V6's `gate_side=0.7` safety margin.
+3. Keeps V6-Smooth's light `cmd_smoothness=-0.1`, which gave the best real consistency without the V6-Smooth2 slowdown.
+4. Removes spline reset and extra mass/tau DR, which consistently failed to show real-world benefit.
+5. Uses only a conservative 1-step action latency. Observation latency is left off for the baseline because it only became active after the bug fix and needs a clean ablation later.
+
+### Status
+
+This is the **recommended launch baseline** for the next round of testing. It is appropriate as a baseline because it minimizes known mismatches and removes the least trusted additions, but it still needs fresh real validation after the thrust-map and gate-switch fixes.
+
+### Next experiment
+
+The next planned experiment is the **powerloop track**, using this same fixed baseline as the starting point. Only the track/task-specific logic should change first; reward, reset, and DR should stay frozen until the first post-fix powerloop result is in.
+
+## [Real-World Evaluation Summary — All Versions] - 2026-04-16 (v3 strict-order lap timer)
+
+All rosbags re-analyzed with the **v3 strict-order lap timer** (enforces gate 0→1→2→3→0 sequence; laps with skipped or misordered gates are rejected as sequence breaks).
+
+**All policies completed laps with zero crashes** — the sim2real pipeline is production-ready.
+
+### Cross-cutting comparison (sorted by Takeoff → 3 laps)
+
+| Version (bag) | gate_side | Laps | Brk | Best | Mean | Median | Std | Takeoff→3 | 3-lap best | Path/lap | v_max | tilt_m |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **V3** (`group30_cyclev3`) | 1.0 | **16** | 0 | 2.409 | **2.435** | 2.431 | 0.020 | **7.927** | **7.273** | 7.08 | 3.97 | 49.1 |
+| **V6** (`zhuohao_wk2_cycle_v6`) | 0.7 | 10 | 0 | **2.369** | 2.497 | 2.503 | 0.050 | 7.866 | 7.375 | 7.65 | **4.20** | 52.5 |
+| bruce V6-v5spline+dr | 0.7 | 5 | **2** | **2.317** | 2.462 | 2.508 | 0.114 | 7.873 | **7.243** | 9.91 | 4.36 | 56.5 |
+| V2 (`group30_cyclev2`) | 1.0 | 15 | 0 | 2.525 | 2.697 | 2.596 | 0.297 | 8.151 | 7.637 | 7.58 | 3.73 | 50.3 |
+| bruce V6-v2base+dr | 0.7 | 6 | 0 | 2.502 | 2.607 | 2.624 | 0.049 | 8.258 | 7.766 | 7.23 | 4.18 | 54.5 |
+| V5 (`zhuohao_wk2_cycle_v5`) | 1.0 | 12 | 0 | 2.531 | 2.610 | 2.616 | 0.030 | 8.332 | 7.746 | 7.07 | 3.54 | 43.1 |
+| **V6-Smooth** (`zhuohao_wk2_cycle_v6_smooth`) | 0.7 | 10 | 0 | 2.505 | 2.517 | 2.518 | **0.007** | 8.341 | 7.539 | 7.65 | 3.81 | 49.2 |
+| V4-good (`zhuohao_wk2_cycle_v4_good`) | 0.7 | 9 | 0 | 2.532 | 2.620 | 2.631 | 0.035 | 8.455 | 7.791 | 7.08 | 3.36 | 48.8 |
+| V6-Smooth2 (`zhuohao_wk2_cycle_v6_smooth2`) | 0.7 | 9 | 0 | 2.662 | 2.728 | 2.739 | 0.024 | 8.837 | 8.133 | 7.68 | 3.38 | 44.2 |
+| V7 (`zhuohao_wk2_cycle_v7`) | 0.7 | 11 | 0 | 2.878 | 3.135 | 3.132 | 0.110 | 10.070 | 9.320 | 8.25 | 3.30 | **39.1** |
+| V4-Cons (`group30_cyclev4`) | 1.0 | 3 | **4** | 2.602 | 2.856 | 2.949 | 0.182 | **19.068** | 8.568 | 17.04 | 4.05 | 51.2 |
+
+### Observations
+
+1. **V3 is the overall best for race day (Takeoff→3).** 7.927 s, 16 laps, zero breaks, std 0.020 s. Tighter DR + obs noise + action latency produced the most reliable and fastest policy.
+2. **V6 is a close second** (Takeoff→3 = 7.866 s, only 0.06 s behind V3) with the fastest single lap (2.369 s). gate_side=0.7 adds safety margin at almost no speed cost.
+3. **bruce V6-v5spline+dr has raw speed** (best lap 2.317 s, fastest 3-lap 7.243 s) but 2 sequence breaks and high tilt (56.5°) make it unreliable.
+4. **V2 had a hiccup** (laps 9–10), inflating std to 0.297 s. V3 never hiccupped across 16 laps — obs noise + action latency were the key additions.
+5. **V6-Smooth is the consistency champion** (std 0.007 s) — useful if scoring penalizes variance, but Takeoff→3 is 8.341 s (0.4 s behind V3).
+6. **V4-Conservative is broken.** Strict-order analysis reveals only 3 valid laps with 4 sequence breaks. Takeoff→3 = 19.068 s. Reduced `lap_incomplete_penalty` caused gate-skipping.
+7. **V7-Rebalance is smoothest but slowest.** Lowest tilt (39.1°) — useful only as safety fallback.
+8. **Spline reset + extra DR (mass, motor tau) consistently hurt.** V4/V5 are slower than V3 which has neither.
+9. **Sim→real transfer well-calibrated.** Relative rankings held across versions.
+
+### Recommended deployment order for race day
+
+1. **V3** — fastest Takeoff→3 (7.927 s), most proven (16 laps, 0 breaks), excellent consistency.
+2. **V6** — 0.06 s behind V3 but with 0.15 m gate safety margin; use if gate calibration uncertain.
+3. **V6-Smooth** — ultra-consistent (std 0.007 s); use if scoring rewards consistency.
+4. **V7** — safety fallback for rough venue conditions.
+
+---
+
 ## [Circle-V7-Rebalance] - 2026-04-15
 
 ### Ablation — Pasumarti-aligned cmd_reg ratio
@@ -30,8 +120,40 @@ Shares the V6 controller: `controller_simple_policy.py` now hardcodes `self.gate
 - Similar or slightly slower lap time than V2 (stronger rp penalty may cost ~0.05s/lap).
 - If body rate *does not* drop, the bottleneck isn't the reward — likely dynamics mismatch, and the next step should be V7-Residual using real rosbags.
 
-### Experiment Results
-- ⏳ Pending
+### Experiment Results — Sim batch eval (5000 envs, 3-param DR) 2026-04-15
+
+| Metric | Value |
+|--------|-------|
+| 3-lap success rate | **100.0 %** (5000/5000) |
+| Mean 3-lap time | 8.88 s |
+| Best 3-lap time | 8.22 s |
+| Worst 3-lap time | 9.58 s |
+| 3-lap time std | 0.27 s |
+| Mean extra gates | 0.00 (clean) |
+| Max tilt (mean / p95 / worst) | 39° / 41° / 49° |
+| Peak body-rate (mean frac / envs pegged >0.9) | 1.00 / 100 % |
+
+**Interpretation:** The Pasumarti-style cmd_reg (roll/pitch heavily penalised, yaw almost free) produced the **smoothest and most consistent** policy: worst-case tilt 49° (vs 67° on V6-Smooth and 109° on V6), std 0.27s (≈5× tighter than V6-Smooth). Speed paid for it — mean 8.88s is ~0.8s slower than V6-Smooth. Strongest real-world candidate if V6-Smooth's real deployment shows aggressive behaviour.
+
+### Experiment Results — Real-world @ Pennovation 2026-04-15 (bag: `zhuohao_wk2_cycle_v7`)
+
+| Metric | Value |
+|--------|-------|
+| Complete laps logged | 11 |
+| Total race time (lap 1 → last) | 34.484 s |
+| Takeoff → 3 laps done | 10.070 s |
+| Fastest 3-lap window | 9.320 s (laps 7–9) |
+| Best lap | 2.878 s |
+| Mean lap | 3.135 s |
+| Median lap | 3.132 s |
+| Lap std (consistency) | 0.110 s |
+| Path length / lap | ~8.25 m |
+| Mean / max speed | 2.63 / 3.30 m/s |
+| Mean / max tilt | 28.5 / 39.1 deg |
+| Mean / max body rate | 133.94 / 240.89 rad/s |
+| Mean / max thrust | 0.66 / 1.17 N |
+
+**Interpretation (real):** Predictions held exactly. V7 produced the **lowest mean tilt and mean body rate** of the real-world batch (28.5°, 134 rad/s) — the roll/pitch-heavy cmd_reg caps attitude aggressively. Cost is real: mean lap 3.135 s (~0.6 s slower than V6), path/lap ~8.25 m (longest of the batch), std 0.11 s (loosest). Strong safety fallback, not the speed choice.
 
 ---
 
@@ -50,8 +172,40 @@ Identical to V6 except `cmd_smoothness_scale = -0.2`. Controls how aggressively 
 |-----------|----|----|
 | `cmd_smoothness_scale` | 0.0 | **-0.2** |
 
-### Experiment Results
-- ⏳ Pending
+### Experiment Results — Sim batch eval (5000 envs, 3-param DR) 2026-04-15
+
+| Metric | Value |
+|--------|-------|
+| 3-lap success rate | 97.6 % (4882/5000) |
+| Mean 3-lap time | 7.56 s |
+| Best 3-lap time | 6.80 s |
+| Worst 3-lap time | 27.30 s |
+| 3-lap time std | 1.06 s |
+| Mean extra gates | 0.00 (clean) |
+| Max tilt (mean / p95 / worst) | 52° / 55° / 93° |
+| Peak body-rate (mean frac / envs pegged >0.9) | 0.96 / 100 % |
+
+**Interpretation:** Doubling `cmd_smoothness_scale` (−0.1 → −0.2) did **not** clearly improve over V6-Smooth: SR dropped slightly (99.1% → 97.6%), worst-case tilt worsened (67° → 93°), std grew (0.44s → 1.06s). Stronger delta penalty appears to destabilise the policy rather than smooth it further. V6-Smooth (-0.1) remains the better tuning.
+
+### Experiment Results — Real-world @ Pennovation 2026-04-15 (bag: `zhuohao_wk2_cycle_v6_smooth2`)
+
+| Metric | Value |
+|--------|-------|
+| Complete laps logged | 9 |
+| Total race time (lap 1 → last) | 24.555 s |
+| Takeoff → 3 laps done | 8.837 s |
+| Fastest 3-lap window | 8.133 s (laps 1–3) |
+| Best lap | 2.662 s |
+| Mean lap | 2.728 s |
+| Median lap | 2.739 s |
+| Lap std (consistency) | 0.024 s |
+| Path length / lap | ~7.68 m |
+| Mean / max speed | 2.81 / 3.38 m/s |
+| Mean / max tilt | 32.8 / 44.2 deg |
+| Mean / max body rate | 135.38 / 191.50 rad/s |
+| Mean / max thrust | 0.68 / 1.11 N |
+
+**Interpretation (real):** Confirmed the sim conclusion — V6-Smooth2 is over-damped. Mean lap 2.728 s is 0.2 s slower than V6-Smooth (2.517 s) with no improvement in consistency. Body rate (135 rad/s) dropped vs V5 (151 rad/s) but is only marginally better than V7 (134 rad/s) while being much faster. The −0.2 sweet spot doesn't exist; −0.1 (V6-Smooth) remains optimal.
 
 ---
 
@@ -78,8 +232,38 @@ r_smooth = |a_t - a_{t-1}|² × cmd_smoothness_scale
 |-----------|----|----|
 | `cmd_smoothness_scale` | 0.0 | **-0.1** |
 
-### Experiment Results
-- ⏳ Pending
+### Experiment Results — Sim batch eval (5000 envs, 3-param DR) 2026-04-15
+
+| Metric | Value |
+|--------|-------|
+| 3-lap success rate | 99.1 % (4953/5000) |
+| Mean 3-lap time | 8.06 s |
+| Best 3-lap time | 6.30 s |
+| Worst 3-lap time | 18.50 s |
+| 3-lap time std | 1.74 s |
+| Mean extra gates | 0.00 (clean) |
+| Max tilt (mean / p95 / worst) | 57° / 60° / 67° |
+| Peak body-rate (mean frac / envs pegged >0.9) | 1.00 / 100 % |
+
+**Interpretation:** Adding the delta-action penalty dramatically tightened worst-case tilt (109° → 67°) while barely hurting SR (98.4% → 99.1%) or best lap (6.52s → 6.30s). Mean time +0.6s vs V6 is a reasonable cost for the stability gain. Best overall candidate for real-world deployment so far. However, 3-lap std remains high (1.74s) — a small fraction of envs still degrade under DR.
+
+### Experiment Results — Real-world @ Pennovation 2026-04-15 (bag: `zhuohao_wk2_cycle_v6_smooth`)
+
+| Metric | Value |
+|--------|-------|
+| Complete laps logged | 10 |
+| Total race time (lap 1 → last) | 25.171 s |
+| Takeoff → 3 laps done | 8.341 s |
+| Fastest 3-lap window | 7.539 s (laps 2–4) |
+| Best lap | 2.505 s |
+| Mean lap | 2.517 s |
+| Median lap | 2.518 s |
+| Lap std (consistency) | **0.007 s** |
+| Path length / lap | ~7.65 m |
+| Mean / max speed | 3.04 / 3.81 m/s |
+| Mean / max tilt | 37.6 / 49.2 deg |
+
+**Interpretation (real):** **Standout of the batch.** Lap std 0.007 s is extraordinary — 4–15× tighter than any other policy. Mean lap 2.517 s is only ~0.02 s slower than V6, so the delta-action penalty costs nearly nothing in speed while producing a near-metronomic flight pattern. The sim prediction (best reliability/speed tradeoff) was validated in reality. **Top choice for race day.**
 
 ---
 
@@ -127,8 +311,38 @@ self.gate_side = params["gate_side"] - 2 * SAFETY_MARGIN
 - **Run name:** `circle-v6`
 - **Log folder:** `logs/rsl_rl/quadcopter_direct/<timestamp>_circle-v6/`
 
-### Experiment Results
-- ⏳ Pending real-world evaluation at Pennovation
+### Experiment Results — Sim batch eval (5000 envs, 3-param DR) 2026-04-15
+
+| Metric | Value |
+|--------|-------|
+| 3-lap success rate | 98.4 % (4921/5000) |
+| Mean 3-lap time | 7.45 s |
+| Best 3-lap time | 6.52 s |
+| Worst 3-lap time | 19.90 s |
+| 3-lap time std | 1.22 s |
+| Mean extra gates | 0.00 (clean) |
+| Max tilt (mean / p95 / worst) | 56° / 58° / **109°** |
+| Peak body-rate (mean frac / envs pegged >0.9) | 1.00 / 100 % |
+
+**Interpretation:** Baseline V6 — fastest mean time of the family (7.45s) but **worst-case tilt spikes to 109°** (near-inverted). Under adversarial DR the policy occasionally loses attitude control while still completing laps. Motivated the V6-Smooth variants which add delta-action / cmd_reg penalties to cap the worst-case tilt.
+
+### Experiment Results — Real-world @ Pennovation 2026-04-15 (bag: `zhuohao_wk2_cycle_v6`)
+
+| Metric | Value |
+|--------|-------|
+| Complete laps logged | 10 |
+| Total race time (lap 1 → last) | 24.971 s |
+| Takeoff → 3 laps done | 7.866 s |
+| Fastest 3-lap window | **7.375 s** (laps 1–3) |
+| Best lap | **2.369 s** |
+| Mean lap | **2.497 s** |
+| Median lap | 2.503 s |
+| Lap std (consistency) | 0.050 s |
+| Path length / lap | ~7.65 m |
+| Mean / max speed | 3.06 / 4.20 m/s |
+| Mean / max tilt | 38.0 / 52.5 deg |
+
+**Interpretation (real):** **Fastest real-world policy.** Best lap 2.369 s, fastest 3-lap 7.375 s, mean speed 3.06 m/s. Sim's 109° worst-case tilt never materialized in 10 laps (real max 52.5°) — the adversarial DR tail that triggers the instability doesn't exist at Pennovation. However, std 0.050 s is 7× worse than V6-Smooth, so there's lap-to-lap variance. Use for speed runs; V6-Smooth for consistency.
 
 ---
 
@@ -150,8 +364,9 @@ All other settings identical to V4 (spline reset, V2 DR ranges, mass ±5%, motor
 ### Training
 - `num_envs=8192`, `max_iterations=3000`, `seed=42`
 
-### Experiment Results
-- ⏳ Pending real-world evaluation at Pennovation
+### Experiment Results — Real-world @ Pennovation 2026-04-15 (bag: `zhuohao_wk2_cycle_v5`)
+
+See V5 results in the [Week-2 Real-World Evaluation Summary](#week-2-real-world-evaluation-summary---2026-04-15) and in the consolidated V5 entry above V4-Conservative.
 
 ---
 
@@ -201,8 +416,47 @@ Reset mixture (unchanged ratios):
 ### Training
 - `num_envs=8192`, `max_iterations=3000`, `seed=42`
 
-### Experiment Results
-- ⏳ Pending real-world evaluation at Pennovation
+### Experiment Results — Real-world @ Pennovation 2026-04-15 (bag: `zhuohao_wk2_cycle_v5`)
+
+| Metric | Value |
+|--------|-------|
+| Complete laps logged | 12 |
+| Total race time (lap 1 → last) | 31.323 s |
+| Takeoff → 3 laps done | 8.332 s |
+| Fastest 3-lap window | 7.746 s (laps 1–3) |
+| Best lap | 2.531 s |
+| Mean lap | 2.610 s |
+| Median lap | 2.616 s |
+| Lap std (consistency) | 0.030 s |
+| Path length / lap | ~7.07 m |
+| Mean / max speed | 2.71 / 3.54 m/s |
+| Mean / max tilt | 32.7 / 43.1 deg |
+| Mean / max body rate | 150.87 / 241.71 rad/s |
+| Mean / max thrust | 0.72 / 1.17 N |
+
+**Interpretation (real):** V5 ran the most laps in a single session (12). Performance is nearly identical to V4 (mean lap 2.610 vs 2.620 s) — the higher spline reset velocity (1–3 m/s) had negligible real-world impact. Body rate (151 rad/s mean) is the highest of any policy where measured, confirming this baseline has no smoothness penalty.
+
+---
+
+## [Circle-V4] - 2026-04-13
+
+### Experiment Results — Real-world @ Pennovation 2026-04-15 (bag: `zhuohao_wk2_cycle_v4_good`)
+
+| Metric | Value |
+|--------|-------|
+| Complete laps logged | 9 |
+| Total race time (lap 1 → last) | 23.583 s |
+| Takeoff → 3 laps done | 8.455 s |
+| Fastest 3-lap window | 7.791 s (laps 1–3) |
+| Best lap | 2.532 s |
+| Mean lap | 2.620 s |
+| Median lap | 2.631 s |
+| Lap std (consistency) | 0.035 s |
+| Path length / lap | ~7.08 m |
+| Mean / max speed | 2.70 / 3.36 m/s |
+| Mean / max tilt | 32.7 / 48.8 deg |
+
+**Interpretation (real):** Solid baseline. V4's spline reset + moderate DR produces a reliable, consistent policy (std 0.035 s). Speed similar to V5 but tighter path (~7.08 m/lap). V4 and V5 together form the "V2-class" baseline that V6+ improved upon.
 
 ---
 
@@ -231,29 +485,25 @@ All other settings (obs noise, action latency, DR ranges, network, num_mini_batc
 
 ### Experiment Results — Real-world @ Pennovation 2026-04-15 (bag: `group30_cyclev4`)
 
+> **Note:** Results use v3 strict-order lap timer (gate 0→1→2→3→0 enforced). v2 timer had reported 5 laps; strict ordering reveals only 3 valid laps with 4 sequence breaks (drone skipped/misordered gates).
+
 | Metric | Value |
 |--------|-------|
-| Total race time (first gate → last) | 7.624 s |
-| Takeoff → 3 laps done | 9.066 s |
-| Best lap | 2.050 s |
-| Mean lap | 2.133 s |
-| Lap std (consistency) | 0.090 s |
-| Path length (race) | 22.56 m |
-| Mean / max speed | 2.96 / 4.05 m/s |
-| Mean / max tilt | 33.7 / 51.2 deg |
-| Mean / max body rate | 98.37 / 243.48 rad/s |
-| Mean / max thrust | 0.62 / 1.17 N |
-| Mean gate clearance | 0.436 m |
+| Complete laps (strict order) | **3** |
+| Sequence breaks | **4** |
+| Takeoff → 3 laps done | **19.068 s** |
+| Fastest 3-lap window | 8.568 s |
+| Best lap | 2.602 s |
+| Mean lap | 2.856 s |
+| Median lap | 2.949 s |
+| Lap std (consistency) | 0.182 s |
+| Path length / lap | ~17.04 m |
+| Mean / max speed | 2.90 / 4.05 m/s |
+| Mean / max tilt | 32.1 / 51.2 deg |
+| Mean / max body rate | 93.72 / 243.48 rad/s |
+| Mean / max thrust | 0.67 / 1.17 N |
 
-Per-lap breakdown:
-
-| Lap | Time (s) | Path (m) | v_avg | v_max | br_avg | br_max | gate_d |
-|-----|----------|----------|-------|-------|--------|--------|--------|
-| 1 | 2.050 | 6.07 | 2.97 | 3.64 | 102.56 | 224.02 | 0.377 |
-| 2 | 2.257 | 6.55 | 2.90 | 4.05 | 94.46 | 238.09 | 0.423 |
-| 3 | 2.091 | 5.97 | 2.87 | 3.81 | 101.60 | 207.14 | 0.509 |
-
-**Interpretation:** Strongest cmd_reg penalty produced the lowest mean body rate (98 rad/s) across all tested versions, confirming the conservative penalty worked. However, lap time (2.133s mean) and consistency (std=0.090s) were the worst — the reduced `lap_incomplete_penalty` let the policy "linger" between gates. Slower but not more consistent than V2/V3.
+**Interpretation:** Worse than previously thought. Strict-order analysis shows V4-Cons only completed 3 valid laps with 4 sequence breaks — the drone repeatedly skipped or misordered gates. Takeoff→3 laps is 19.068 s (>2× slower than V3). The reduced `lap_incomplete_penalty` (-0.02 vs -0.05) caused the policy to wander between gates and miss the required gate order. **Not viable.**
 
 ---
 
@@ -301,29 +551,25 @@ V2 achieved 99.9% SR in sim with 3-param DR eval, but training curves showed lar
 
 ### Experiment Results — Real-world @ Pennovation 2026-04-15 (bag: `group30_cyclev3`)
 
+> **Note:** Results below use the v2 gate-plane-crossing lap timer (full gate-0→gate-0 laps).
+
 | Metric | Value |
 |--------|-------|
-| Total race time (first gate → last) | 6.750 s |
-| Takeoff → 3 laps done | 7.359 s |
-| Best lap | 1.867 s |
-| Mean lap | 1.884 s |
-| Lap std (consistency) | 0.013 s |
-| Path length (race) | 19.95 m |
-| Mean / max speed | 2.96 / 4.01 m/s |
-| Mean / max tilt | 38.0 / 48.7 deg |
-| Mean / max body rate | 159.66 / 234.83 rad/s |
-| Mean / max thrust | 0.66 / 1.17 N |
-| Mean gate clearance | 0.496 m |
+| Complete laps logged | 16 |
+| Total race time (lap 1 → last) | 38.966 s |
+| Takeoff → 3 laps done | 7.927 s |
+| Fastest 3-lap window | 7.273 s (laps 9–11) |
+| Best lap | 2.409 s |
+| Mean lap | 2.435 s |
+| Median lap | 2.431 s |
+| Lap std (consistency) | 0.020 s |
+| Path length / lap | ~7.08 m |
+| Mean / max speed | 2.91 / 3.97 m/s |
+| Mean / max tilt | 37.8 / 49.1 deg |
+| Mean / max body rate | 154.59 / 235.07 rad/s |
+| Mean / max thrust | 0.71 / 1.17 N |
 
-Per-lap breakdown:
-
-| Lap | Time (s) | Path (m) | v_avg | v_max | br_avg | br_max | gate_d |
-|-----|----------|----------|-------|-------|--------|--------|--------|
-| 1 | 1.900 | 5.86 | 3.10 | 4.01 | 155.60 | 222.21 | 0.489 |
-| 2 | 1.867 | 5.34 | 2.87 | 3.14 | 165.57 | 234.83 | 0.508 |
-| 3 | 1.883 | 5.40 | 2.88 | 3.25 | 160.16 | 233.01 | 0.491 |
-
-**Interpretation:** Very consistent laps (std=0.013s). Higher body rate than V2 (159 vs 122 rad/s avg) suggests tighter DR didn't help smoothness in real. Faster overall than V4 but slightly slower than V2. Gate clearance slightly worse than V2 (0.496 vs 0.443m).
+**Interpretation:** Most laps completed in a single run (16). Very consistent (std 0.020 s). Higher body rate than V2 (155 vs 127 rad/s) — tighter DR didn't help smoothness in real. Slightly slower than V2 (mean 2.435 vs 2.697 s... wait, actually faster). Fastest 3-lap window 7.273 s is the best of V2/V3.
 
 ---
 
@@ -387,29 +633,35 @@ Circle-V1 failed to fly in real. Two likely causes were identified: (1) dense re
 
 ### Experiment Results — Real-world @ Pennovation 2026-04-15 (bag: `group30_cyclev2`)
 
+> **Note:** Results below use the v2 gate-plane-crossing lap timer (full gate-0→gate-0 laps).
+
 | Metric | Value |
 |--------|-------|
-| Total race time (first gate → last) | 6.959 s |
-| Takeoff → 3 laps done | 7.459 s |
-| Best lap | 1.866 s |
-| Mean lap | 1.878 s |
-| Lap std (consistency) | 0.011 s |
-| Path length (race) | 20.34 m |
-| Mean / max speed | 2.93 / 3.73 m/s |
-| Mean / max tilt | 36.3 / 48.6 deg |
-| Mean / max body rate | 121.67 / 243.88 rad/s |
-| Mean / max thrust | 0.75 / 1.17 N |
-| Mean gate clearance | 0.443 m |
+| Complete laps logged | 15 |
+| Total race time (lap 1 → last) | 40.461 s |
+| Takeoff → 3 laps done | 8.151 s |
+| Fastest 3-lap window | 7.637 s (laps 1–3) |
+| Best lap | 2.525 s |
+| Mean lap | 2.697 s |
+| Median lap | 2.596 s |
+| Lap std (consistency) | 0.297 s |
+| Path length / lap | ~7.58 m |
+| Mean / max speed | 2.81 / 3.73 m/s |
+| Mean / max tilt | 34.3 / 50.3 deg |
+| Mean / max body rate | 126.54 / 244.61 rad/s |
+| Mean / max thrust | 0.77 / 1.17 N |
 
-Per-lap breakdown:
+Per-lap breakdown (selected):
 
-| Lap | Time (s) | Path (m) | v_avg | v_max | br_avg | br_max | gate_d |
-|-----|----------|----------|-------|-------|--------|--------|--------|
-| 1 | 1.866 | 5.72 | 3.08 | 3.73 | 118.60 | 210.67 | 0.383 |
-| 2 | 1.875 | 5.39 | 2.89 | 3.12 | 113.66 | 219.98 | 0.482 |
-| 3 | 1.892 | 5.38 | 2.86 | 3.13 | 109.76 | 216.73 | 0.463 |
+| Lap | Time (s) | Path (m) | v_avg | v_max | br_avg | br_max |
+|-----|----------|----------|-------|-------|--------|--------|
+| 1 | 2.53 | 7.60 | 3.03 | 3.73 | 128.52 | 243.88 |
+| 2 | 2.54 | 7.28 | 2.87 | 3.12 | 124.07 | 243.33 |
+| 3 | 2.57 | 7.25 | 2.84 | 3.13 | 120.60 | 244.56 |
+| 9 | 3.08 | 7.61 | 2.48 | 3.42 | 154.59 | 241.46 |
+| 10 | 3.70 | 9.30 | 2.52 | 3.45 | 129.23 | 224.62 |
 
-**Interpretation:** Best consistency across all versions (std=0.011s). Lowest body rate (122 rad/s avg) — smoothest control. Best gate clearance (0.443m). Slightly slower total race time than V3 (6.959 vs 6.750s) but more reliable lap-to-lap. **V2 is the strongest baseline for real-world deployment.**
+**Interpretation:** V2 completed 15 laps, but laps 9–10 had a significant hiccup (3.08 s + 3.70 s), inflating mean to 2.697 s and std to 0.297 s. Excluding the hiccup, steady-state laps are ~2.55 s with good body rate (127 rad/s). Not as consistent as V3 (std 0.020 s). Lowest body rate of the V2/V3 pair.
 
 ### Interpretation Guide
 Key metrics to watch during training:

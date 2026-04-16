@@ -1,45 +1,45 @@
 {
   "bag": "/home/peterni/Documents/ese6510/ese651_project/rosbags/group30_cyclev3",
-  "namespace": null,
+  "namespace": "crazy_jirl_b3",
   "sim_nominal": {
-    "thrust_to_weight": 1.9,
+    "thrust_to_weight": 3.15,
     "k_aero_xy": 0.01,
     "k_aero_z": 0.01,
-    "mass_kg": 0.033,
+    "mass_kg": 0.038,
     "g": 9.81
   },
   "identified": {
     "twr_est": 1.94769933153622,
     "twr_std": 1.5302191668341512,
-    "k_aero_xy_est": 0.08106237741203698,
-    "k_aero_xy_std": 0.026152169548078405,
+    "k_aero_xy_est": 0.09334455580780016,
+    "k_aero_xy_std": 0.030114619479605434,
     "pid_lag_s": {
-      "roll": -2.5300000000000002,
-      "pitch": 0.36,
-      "yaw": 0.06
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.04
     },
-    "mean_lag_s": -0.7033333333333335
+    "mean_lag_s": 0.013333333333333334
   },
   "suggested_dr": {
     "TWR": {
-      "identified_scale": 1.025,
-      "suggested_range_lo": 0.005,
-      "suggested_range_hi": 2.636,
+      "identified_scale": 0.618,
+      "suggested_range_lo": 0.003,
+      "suggested_range_hi": 1.59,
       "current_sim": "\u00b115% \u2192 [0.85, 1.15]\u00d7nominal",
-      "note": "Real TWR is 1.02\u00d7 nominal \u2014 recenter DR here"
+      "note": "Real TWR is 0.62\u00d7 nominal \u2014 recenter DR here"
     },
     "k_aero_xy": {
-      "identified_scale": 8.106,
-      "suggested_range_lo": 2.876,
-      "suggested_range_hi": 13.337,
+      "identified_scale": 9.334,
+      "suggested_range_lo": 3.312,
+      "suggested_range_hi": 15.357,
       "current_sim": "0.2\u20133.0\u00d7 nominal",
-      "note": "Real drag is 8.11\u00d7 nominal \u2014 tighten DR center"
+      "note": "Real drag is 9.33\u00d7 nominal \u2014 tighten DR center"
     },
     "action_latency_steps": {
-      "identified_steps": 0,
-      "identified_lag_ms": -703,
+      "identified_steps": 1,
+      "identified_lag_ms": 13,
       "current_sim": "0\u20132 steps (V3) / none (V4+)",
-      "note": "Real lag \u2248 0 policy steps \u2014 use this as max_latency"
+      "note": "Real lag \u2248 1 policy steps \u2014 use this as max_latency"
     }
   }
 }

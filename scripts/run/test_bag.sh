@@ -24,8 +24,8 @@ else
   BAG_PATH="$BAG_ROOT/$BAG_ARG"
 fi
 
-if [[ ! -d "$BAG_PATH" ]]; then
-  echo "Bag directory not found: $BAG_PATH" >&2
+if [[ ! -d "$BAG_PATH" && ! -f "$BAG_PATH" ]]; then
+  echo "Bag path not found: $BAG_PATH" >&2
   exit 1
 fi
 

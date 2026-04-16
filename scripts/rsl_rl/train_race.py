@@ -107,7 +107,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_dir = os.path.join(log_root_path, log_dir)
 
     # TODO ----- START ----- Define rewards scales
-    # Sparse reward with strong gate signal + real-world cmd smoothness.
+    # Fixed sim2real baseline: V3 sparse reward core + light action smoothness.
     # gate_pass must dominate continuous negative terms to prevent policy collapse.
     # Values can be overridden via environment variables (e.g. REW_CMD_REG_RP=-2.0).
     gate_pass_reward_scale = float(os.environ.get('REW_GATE_PASS', 200.0))
@@ -117,7 +117,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     cmd_reg_yaw_scale = float(os.environ.get('REW_CMD_REG_YAW', -0.5))
     crash_reward_scale = float(os.environ.get('REW_CRASH', -2.0))
     crash_contact_scale = float(os.environ.get('REW_CRASH_CONTACT', -0.1))
-    cmd_smoothness_scale = float(os.environ.get('REW_CMD_SMOOTHNESS', 0.0))
+    cmd_smoothness_scale = float(os.environ.get('REW_CMD_SMOOTHNESS', -0.1))
 
     rewards = {
         'gate_pass_reward_scale': gate_pass_reward_scale,

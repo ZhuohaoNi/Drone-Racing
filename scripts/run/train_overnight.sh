@@ -1,15 +1,15 @@
 #!/bin/bash
 # Overnight sequential ablation runs.
-# Runs multiple Circle-V6 variants back-to-back, each with different hyperparameters.
+# Runs the fixed baseline first, then a small set of post-fix reward ablations.
 #
 # Usage:
 #   ./scripts/run/train_overnight.sh [max_iterations] [num_envs]
 #
 # Experiments:
-#   1. circle-v6          gate_side=0.7, no smoothness (baseline)
-#   2. circle-v6-smooth   gate_side=0.7, delta action penalty -0.1
-#   3. circle-v6-smooth2  gate_side=0.7, delta action penalty -0.2
-#   4. circle-v7-rebalance  Pasumarti-aligned cmd_reg ratio: rp=-2.0, yaw=-0.05
+#   1. circle-fixed-baseline      post-fix baseline with light smoothness (-0.1)
+#   2. circle-fixed-nosmooth      remove smoothness to isolate its benefit
+#   3. circle-fixed-smooth2       stronger smoothness penalty (-0.2)
+#   4. circle-fixed-v7-rebalance  Pasumarti-aligned cmd_reg ratio: rp=-2.0, yaw=-0.05
 
 set -e
 
@@ -41,22 +41,22 @@ run_experiment() {
     echo "  Finished: $run_name at $(date)"
 }
 
-# ── Experiment 1: V6 baseline (gate_side=0.7, no smoothness penalty) ──────────
-run_experiment "circle-v6" ""
+# ── Experiment 1: Fixed baseline (default config) ──────────────────────────────
+run_experiment "circle-fixed-baseline" ""
 
-# ── Experiment 2: V6 + light smoothness penalty ───────────────────────────────
-run_experiment "circle-v6-smooth" "REW_CMD_SMOOTHNESS=-0.1"
+# ── Experiment 2: Baseline without smoothness penalty ─────────────────────────
+run_experiment "circle-fixed-nosmooth" "REW_CMD_SMOOTHNESS=0.0"
 
-# ── Experiment 3: V6 + stronger smoothness penalty ────────────────────────────
-run_experiment "circle-v6-smooth2" "REW_CMD_SMOOTHNESS=-0.2"
+# ── Experiment 3: Baseline with stronger smoothness penalty ───────────────────
+run_experiment "circle-fixed-smooth2" "REW_CMD_SMOOTHNESS=-0.2"
 
-# ── Experiment 4: V7 Pasumarti-aligned cmd_reg rebalance ──────────────────────
-# Keeps V6's gate_side=0.7. Changes the roll/pitch vs yaw penalty ratio to match
+# ── Experiment 4: Pasumarti-aligned cmd_reg rebalance ─────────────────────────
+# Keeps the fixed baseline and changes the roll/pitch vs yaw penalty ratio to match
 # Pasumarti 2026 Eq. 5: rp=-2.0 (2x stronger), yaw=-0.05 (10x weaker).
 # Rationale: V2/V3/V4 real body rates (120-160 rad/s) are dominated by roll/pitch
 # during gate passage; yaw rate stays low. Current yaw=-0.5 is over-penalizing a
 # non-issue and may be crowding out rp exploration.
-run_experiment "circle-v7-rebalance" "REW_CMD_REG_RP=-2.0 REW_CMD_REG_YAW=-0.05"
+run_experiment "circle-fixed-v7-rebalance" "REW_CMD_REG_RP=-2.0 REW_CMD_REG_YAW=-0.05"
 
 echo ""
 echo "========================================"

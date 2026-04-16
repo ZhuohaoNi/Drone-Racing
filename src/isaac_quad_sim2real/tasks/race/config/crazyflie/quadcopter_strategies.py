@@ -729,6 +729,8 @@ class CircleQuadcopterStrategy:
         self._prev_actions = torch.zeros(
             self.num_envs, self.cfg.action_space, dtype=torch.float, device=self.device
         )
+        self._prev_obs = torch.zeros(self.num_envs, 40, dtype=torch.float, device=self.device)
+        self._prev_obs_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         if self.cfg.is_train:
             self._randomize_dynamics(torch.arange(self.num_envs, device=self.device))
@@ -1156,7 +1158,17 @@ class CircleQuadcopterStrategy:
                 + [0.0] * 4,        # prev_action: no noise (known exactly)
                 device=self.device,
             )
-            obs = obs + torch.randn_like(obs) * noise_std
+            current_obs = obs + torch.randn_like(obs) * noise_std
+
+            latency_prob = float(getattr(self.cfg, "obs_latency_prob", 0.0))
+            if latency_prob > 0.0:
+                use_prev = (torch.rand(self.num_envs, device=self.device) < latency_prob) & self._prev_obs_valid
+                obs = torch.where(use_prev.unsqueeze(1), self._prev_obs, current_obs)
+            else:
+                obs = current_obs
+
+            self._prev_obs.copy_(current_obs)
+            self._prev_obs_valid[:] = True
 
         return {"policy": obs}
 
@@ -1377,6 +1389,8 @@ class CircleQuadcopterStrategy:
         self._lap_start_step[env_ids] = 0
         self._steps_since_gate_pass[env_ids] = 999
         self._prev_actions[env_ids] = 0.0
+        self._prev_obs[env_ids] = 0.0
+        self._prev_obs_valid[env_ids] = False
         if self.cfg.is_train:
             effective_replay_mask = replay_mask & (~ground_mask)
             spline_mask = (~replay_mask) & (~ground_mask)

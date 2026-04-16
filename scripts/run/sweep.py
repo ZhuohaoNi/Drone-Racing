@@ -20,7 +20,7 @@ import argparse
 import json
 from itertools import product
 
-# ---------- Default reward scales (Circle-V3 Sparse Baseline) ----------
+# ---------- Default reward scales (Fixed sim2real baseline) ----------
 REWARD_DEFAULTS = {
     "gate_pass_reward_scale": 200.0,
     "death_cost": -100.0,
@@ -29,9 +29,10 @@ REWARD_DEFAULTS = {
     "cmd_reg_yaw_scale": -0.5,
     "crash_reward_scale": -2.0,
     "crash_contact_scale": -0.1,
+    "cmd_smoothness_scale": -0.1,
 }
 
-# ---------- Default PPO config (Circle-V3 baseline) ----------
+# ---------- Default PPO config (Fixed sim2real baseline) ----------
 PPO_DEFAULTS = {
     "num_steps_per_env": 64,
     "gamma": 0.99,
@@ -44,58 +45,58 @@ PPO_DEFAULTS = {
 
 # ---------- Environment config defaults ----------
 ENV_DEFAULTS = {
-    "action_latency_max": 0,               # V4: disabled (V2 had none)
-    "mass_variation": 0.05,                # ±5% mass randomization (moderate)
-    "motor_tau_scale_min": 0.7,            # motor time constant DR lower bound (moderate)
-    "motor_tau_scale_max": 1.3,            # motor time constant DR upper bound (moderate)
-    "obs_latency_prob": 0.0,              # V4: disabled
-    "use_spline_reset": True,              # spline-based reset with velocity init
-    "spline_vel_min": 0.5,                # min tangent velocity for spline resets (m/s)
-    "spline_vel_max": 1.5,                # max tangent velocity for spline resets (m/s)
+    "action_latency_max": 1,               # fixed baseline: conservative 1-step action delay
+    "mass_variation": 0.0,                 # fixed baseline: disable extra DR until re-identified
+    "motor_tau_scale_min": 1.0,            # fixed baseline: no motor-tau DR
+    "motor_tau_scale_max": 1.0,
+    "obs_latency_prob": 0.0,               # fixed baseline: keep off; ablate separately
+    "use_spline_reset": False,             # fixed baseline: replay + ground + linear interp resets
+    "spline_vel_min": 0.5,                 # inactive unless use_spline_reset=True
+    "spline_vel_max": 1.5,
 }
 
 # ---------- Sweep configurations ----------
 # Each entry: (name, reward_overrides, ppo_overrides, env_overrides)
 # env_overrides is optional (defaults to {}) for backward compat
 SWEEP_CONFIGS = [
-    # 0: V4 baseline (V2 DR ranges + spline reset + moderate mass/tau DR)
-    ("s2r_v4_baseline", {}, {}, {}),
+    # 0: Fixed post-fix baseline
+    ("s2r_fixed_baseline", {}, {}, {}),
 
-    # --- Ablation: DR components ---
-    # 1: No mass randomization
-    ("s2r_v4_no_mass_dr", {}, {}, {"mass_variation": 0.0}),
+    # --- Ablation: add back removed DR components one at a time ---
+    # 1: Add moderate mass randomization
+    ("s2r_fixed_plus_mass_dr", {}, {}, {"mass_variation": 0.05}),
 
-    # 2: No motor tau randomization (fixed tau_m)
-    ("s2r_v4_no_tau_dr", {}, {}, {"motor_tau_scale_min": 1.0, "motor_tau_scale_max": 1.0}),
+    # 2: Add moderate motor tau randomization
+    ("s2r_fixed_plus_tau_dr", {}, {}, {"motor_tau_scale_min": 0.7, "motor_tau_scale_max": 1.3}),
 
-    # 3: No new DR (no mass, no tau — pure V2 DR only)
-    ("s2r_v4_v2_dr_only", {}, {}, {
-        "mass_variation": 0.0,
-        "motor_tau_scale_min": 1.0,
-        "motor_tau_scale_max": 1.0,
+    # 3: Add both mass and motor tau randomization
+    ("s2r_fixed_plus_mass_tau_dr", {}, {}, {
+        "mass_variation": 0.05,
+        "motor_tau_scale_min": 0.7,
+        "motor_tau_scale_max": 1.3,
     }),
 
-    # --- Reset strategy ablation ---
-    # 4: No spline reset (V2-style linear interp, zero velocity)
-    ("s2r_v4_no_spline", {}, {}, {"use_spline_reset": False}),
+    # --- Reset / latency ablation ---
+    # 4: Turn on observation latency now that it is implemented
+    ("s2r_fixed_obs_latency_p01", {}, {}, {"obs_latency_prob": 0.1}),
 
-    # 5: Spline reset but slower velocity (more conservative)
-    ("s2r_v4_spline_slow", {}, {}, {"spline_vel_min": 0.2, "spline_vel_max": 0.8}),
+    # 5: Add spline reset back on top of the fixed baseline
+    ("s2r_fixed_plus_spline", {}, {}, {"use_spline_reset": True}),
 
     # --- Reward tuning ---
     # 6: Stronger gate_pass
-    ("s2r_v4_gate300", {
+    ("s2r_fixed_gate300", {
         "gate_pass_reward_scale": 300.0,
     }, {}, {}),
 
     # 7: Tighter cmd reg
-    ("s2r_v4_tight_cmd", {
+    ("s2r_fixed_tight_cmd", {
         "cmd_reg_rp_scale": -1.5,
         "cmd_reg_yaw_scale": -0.8,
     }, {}, {}),
 
     # 8: More forgiving crash cost
-    ("s2r_v4_forgiving", {
+    ("s2r_fixed_forgiving", {
         "death_cost": -50.0,
     }, {}, {}),
 ]
