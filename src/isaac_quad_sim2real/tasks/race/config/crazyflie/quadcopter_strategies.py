@@ -767,6 +767,13 @@ class CircleQuadcopterStrategy:
         )
         self._prev_obs = torch.zeros(self.num_envs, 40, dtype=torch.float, device=self.device)
         self._prev_obs_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._fixed_obs_delay_steps = max(0, int(getattr(self.cfg, "fixed_obs_delay_steps", 0)))
+        self._obs_history = torch.zeros(
+            self._fixed_obs_delay_steps + 1, self.num_envs, 40, dtype=torch.float, device=self.device
+        )
+        self._obs_history_valid = torch.zeros(
+            self._fixed_obs_delay_steps + 1, self.num_envs, dtype=torch.bool, device=self.device
+        )
 
         if self.cfg.is_train:
             self._randomize_dynamics(torch.arange(self.num_envs, device=self.device))
@@ -1279,25 +1286,81 @@ class CircleQuadcopterStrategy:
             self.env._previous_actions,                         # (num_envs,  4)
         ], dim=-1)                                              # total: 40
 
-        # Observation noise for sim2real robustness (Swift, Kaufmann et al. 2023)
-        # Simulates Vicon measurement noise, velocity estimation error, and gate calibration error.
+        # Observation perturbations for sim2real robustness tests.
         if self.cfg.is_train:
-            noise_std = torch.tensor(
-                [0.05] * 3          # lin_vel_b: ±0.05 m/s (Vicon velocity from numerical diff)
-                + [0.01] * 9        # rot_matrix: ±0.01 (small attitude noise)
-                + [0.02] * 12       # curr_gate_corners: ±0.02m (gate calibration)
-                + [0.02] * 12       # next_gate_corners: ±0.02m
-                + [0.0] * 4,        # prev_action: no noise (known exactly)
+            current_obs = obs.clone()
+
+            noise_scale = float(getattr(self.cfg, "obs_noise_std_scale", 1.0))
+            if noise_scale > 0.0:
+                noise_std = torch.tensor(
+                    [0.05] * 3          # lin_vel_b: ±0.05 m/s (Vicon velocity from numerical diff)
+                    + [0.01] * 9        # rot_matrix: ±0.01 (small attitude noise)
+                    + [0.02] * 12       # curr_gate_corners: ±0.02m (gate calibration)
+                    + [0.02] * 12       # next_gate_corners: ±0.02m
+                    + [0.0] * 4,        # prev_action: no noise (known exactly)
+                    device=self.device,
+                ) * noise_scale
+                current_obs += torch.randn_like(current_obs) * noise_std
+
+            extra_vel_noise = float(getattr(self.cfg, "obs_lin_vel_noise_std", 0.0))
+            if extra_vel_noise > 0.0:
+                current_obs[:, :3] += torch.randn_like(current_obs[:, :3]) * extra_vel_noise
+
+            vel_bias = torch.tensor(
+                getattr(self.cfg, "obs_lin_vel_bias", [0.0, 0.0, 0.0]),
+                dtype=current_obs.dtype,
                 device=self.device,
             )
-            current_obs = obs + torch.randn_like(obs) * noise_std
+            current_obs[:, :3] += vel_bias
 
-            latency_prob = float(getattr(self.cfg, "obs_latency_prob", 0.0))
-            if latency_prob > 0.0:
-                use_prev = (torch.rand(self.num_envs, device=self.device) < latency_prob) & self._prev_obs_valid
-                obs = torch.where(use_prev.unsqueeze(1), self._prev_obs, current_obs)
+            gate_bias = torch.tensor(
+                getattr(self.cfg, "obs_gate_corner_bias", [0.0, 0.0, 0.0]),
+                dtype=current_obs.dtype,
+                device=self.device,
+            )
+            if torch.any(gate_bias != 0.0):
+                current_obs[:, 12:24] = (
+                    current_obs[:, 12:24].reshape(self.num_envs, 4, 3) + gate_bias.view(1, 1, 3)
+                ).reshape(self.num_envs, 12)
+                current_obs[:, 24:36] = (
+                    current_obs[:, 24:36].reshape(self.num_envs, 4, 3) + gate_bias.view(1, 1, 3)
+                ).reshape(self.num_envs, 12)
+
+            yaw_bias_deg = float(getattr(self.cfg, "obs_yaw_bias_deg", 0.0))
+            if yaw_bias_deg != 0.0:
+                yaw_bias_rad = yaw_bias_deg * D2R
+                c = np.cos(yaw_bias_rad)
+                s = np.sin(yaw_bias_rad)
+                yaw_rot = torch.tensor(
+                    [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]],
+                    dtype=current_obs.dtype,
+                    device=self.device,
+                )
+                current_obs[:, :3] = current_obs[:, :3] @ yaw_rot
+                current_obs[:, 12:24] = (
+                    current_obs[:, 12:24].reshape(self.num_envs, 4, 3) @ yaw_rot
+                ).reshape(self.num_envs, 12)
+                current_obs[:, 24:36] = (
+                    current_obs[:, 24:36].reshape(self.num_envs, 4, 3) @ yaw_rot
+                ).reshape(self.num_envs, 12)
+                current_obs[:, 3:12] = (rot_body @ yaw_rot).reshape(self.num_envs, 9)
+
+            self._obs_history = self._obs_history.roll(1, dims=0)
+            self._obs_history[0].copy_(current_obs)
+            self._obs_history_valid = self._obs_history_valid.roll(1, dims=0)
+            self._obs_history_valid[0] = True
+
+            if self._fixed_obs_delay_steps > 0:
+                delayed_obs = self._obs_history[self._fixed_obs_delay_steps]
+                delayed_valid = self._obs_history_valid[self._fixed_obs_delay_steps]
+                obs = torch.where(delayed_valid.unsqueeze(1), delayed_obs, current_obs)
             else:
-                obs = current_obs
+                latency_prob = float(getattr(self.cfg, "obs_latency_prob", 0.0))
+                if latency_prob > 0.0:
+                    use_prev = (torch.rand(self.num_envs, device=self.device) < latency_prob) & self._prev_obs_valid
+                    obs = torch.where(use_prev.unsqueeze(1), self._prev_obs, current_obs)
+                else:
+                    obs = current_obs
 
             self._prev_obs.copy_(current_obs)
             self._prev_obs_valid[:] = True
@@ -1523,6 +1586,8 @@ class CircleQuadcopterStrategy:
         self._prev_actions[env_ids] = 0.0
         self._prev_obs[env_ids] = 0.0
         self._prev_obs_valid[env_ids] = False
+        self._obs_history[:, env_ids] = 0.0
+        self._obs_history_valid[:, env_ids] = False
         if self.cfg.is_train:
             effective_replay_mask = replay_mask & (~ground_mask)
             fallback_mask = (~replay_mask) & (~ground_mask)

@@ -4,6 +4,129 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Powerloop Robustness Sweep: Observation Bias vs Control Mismatch] - 2026-04-19
+
+### Purpose
+
+Before the next real-world sysid day, run a minimal but clean robustness sweep
+for the current powerloop checkpoint to answer one question:
+
+Is this policy more likely to fail from moderate control mismatch, or from
+systematic observation mismatch?
+
+This was intentionally a deterministic eval-only sweep, not training DR:
+
+- Track: `powerloop`
+- Checkpoint: `2026-04-18_14-55-19_powerloop-r1d1-gate3mask`
+- Reset mode: ground-start only (`ground_reset_ratio=1.0`)
+- Per scenario: 768 ground starts
+- Metrics: takeoff success, first-gate success, 3-lap success, successful
+  3-lap time
+
+### Figure
+
+![Powerloop robustness sweep summary](figures/powerloop_robustness_sweep_2026-04-18.png)
+
+### Key result
+
+All 13 scenarios reached:
+
+- Takeoff success = **100%**
+- First-gate success = **100%**
+
+So the separating signal in this sweep is **not** takeoff failure or immediate
+Gate-1 failure. The main differences appear in the later trajectory execution.
+
+The strongest pattern is:
+
+- Moderate control mismatch did **not** collapse the policy.
+- Zero-mean observation noise also did **not** collapse the policy.
+- **Systematic observation bias** was the dominant failure mode.
+
+Most severe cases:
+
+- `obs_vel_bias_0p20`: 3-lap success dropped from **96.6%** to **2.9%**
+- `obs_gate_bias_5cm`: 3-lap success dropped to **92.4%**, mean successful
+  time slowed from **18.65 s** to **20.76 s**
+
+### Full sweep table
+
+| Scenario | Group | 3-lap SR (%) | Mean 3-lap (s) | Delta SR vs nominal (pct-pts) |
+|---|---:|---:|---:|---:|
+| `control_nominal` | control | 96.6 | 18.65 | +0.0 |
+| `control_thrust_0p90` | control | 100.0 | 18.33 | +3.4 |
+| `control_thrust_1p10` | control | 96.2 | 18.64 | -0.4 |
+| `control_latency_20ms` | control | 96.9 | 18.40 | +0.3 |
+| `control_latency_40ms` | control | 99.9 | 18.41 | +3.3 |
+| `control_rate_gain_0p85` | control | 95.6 | 18.65 | -1.0 |
+| `control_rate_gain_1p15` | control | 99.5 | 18.38 | +2.9 |
+| `obs_vel_noise_0p05` | observation | 96.5 | 18.81 | -0.1 |
+| `obs_vel_bias_0p20` | observation | 2.9 | 28.15 | -93.8 |
+| `obs_yaw_bias_5deg` | observation | 99.9 | 18.30 | +3.3 |
+| `obs_gate_bias_5cm` | observation | 92.4 | 20.76 | -4.2 |
+| `obs_delay_20ms` | observation | 98.2 | 18.40 | +1.6 |
+| `obs_delay_40ms` | observation | 100.0 | 18.39 | +3.4 |
+
+Raw outputs are stored under:
+
+- `logs/rsl_rl/quadcopter_direct/2026-04-18_14-55-19_powerloop-r1d1-gate3mask/robustness_sweep/best_model/robustness_sweep_summary.csv`
+- `logs/rsl_rl/quadcopter_direct/2026-04-18_14-55-19_powerloop-r1d1-gate3mask/robustness_sweep/best_model/robustness_sweep_summary.json`
+
+### Interpretation
+
+This result makes sense and is worth recording, with one important boundary:
+it is a **sim-side robustness diagnosis**, not a proof of real deployment
+readiness.
+
+Why it makes sense:
+
+- The project has already shown that the 40-dim observation pipeline can fly
+  in real on circle tasks, so the observation design itself is not obviously
+  broken.
+- The project has also already hit a real deployment bug where wrong
+  `gate_side` handling changed the gate-corner observation geometry. That is
+  qualitatively consistent with the measured sensitivity to gate bias here.
+- It is plausible that a policy tolerates zero-mean noise better than a
+  fixed, systematic bias. The sweep matches that expectation.
+
+What is safe to conclude from this sweep:
+
+- For this checkpoint, **moderate actuator mismatch is not the first-order
+  failure mode** among the tested perturbations.
+- For this checkpoint, **systematic observation bias is the highest-priority
+  risk**, especially body-frame x-velocity bias.
+- Gate-geometry / gate-corner bias is the second clearest vulnerability in
+  this sweep.
+
+What is **not** safe to conclude:
+
+- That the real system definitely has a `+0.20 m/s` body-frame velocity bias
+- That the policy is ready for unrestricted real deployment
+- That the exact sign of every small improvement in the control sweeps should
+  be over-interpreted; some scenarios were slightly better than nominal, which
+  is informative but not enough to claim a monotonic trend
+
+### Next real-world sysid priority
+
+Based on this sweep, the next real test day should prioritize:
+
+1. Body-frame velocity sanity and bias checks
+2. Gate geometry / gate-corner alignment checks
+3. Low-level response softness checks (effective thrust and body-rate tracking)
+
+Recommended log targets:
+
+- Hover: body-frame velocity near zero when physically stationary
+- Straight-line accel/decel: body-frame velocity sign, scale, and lag
+- Roll/pitch/yaw step response: latency, rise time, overshoot, rate tracking
+- Gate observation pipeline: transformed gate corners or equivalent geometry
+  fed to the policy
+
+Use this changelog entry as a prioritization result for real sysid, not as a
+deployment-readiness claim.
+
+---
+
 ## [Previous-Gate Backtrack Detection] - 2026-04-18c
 
 ### Purpose

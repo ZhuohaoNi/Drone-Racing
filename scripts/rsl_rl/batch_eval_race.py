@@ -4,8 +4,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Batch self-evaluation script: each env gets its own independently sampled set
-of 3 random TA parameters.
+"""Batch self-evaluation script: each env can get its own sampled TA params.
 
 Design rationale
 ----------------
@@ -14,9 +13,10 @@ constant for *all* students.  To self-evaluate robustness we want to cover as
 many such 3-parameter combinations as possible.
 
 Strategy: run N_ENVS parallel environments simultaneously.  For each env we
-independently sample *which* 3 parameters to perturb and sample values within
-the official bounds.  This gives N_ENVS distinct parameter configurations in a
-single simulation run — far more efficient than running N_ENVS identical configs.
+independently sample *which* parameters to perturb and sample values within the
+official bounds.  This gives N_ENVS distinct parameter configurations in a
+single simulation run — or, when `--num_params_per_env 0`, one shared global
+configuration across all envs.
 
 We repeat this for N_TRIALS rounds (re-sampling all per-env parameters each
 round) to get variance estimates.
@@ -61,10 +61,12 @@ from isaaclab.app import AppLauncher
 import cli_args  # isort: skip
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
-parser = argparse.ArgumentParser(description="Batch eval — each env gets independent TA-style DR.")
+parser = argparse.ArgumentParser(description="Batch eval — optional per-env TA-style DR.")
 parser.add_argument("--num_trials",  type=int, default=5,    help="Number of evaluation rounds.")
 parser.add_argument("--num_envs",    type=int, default=100,  help="Parallel envs (= param combos per trial).")
 parser.add_argument("--max_steps",   type=int, default=3000, help="Max sim steps per trial.")
+parser.add_argument("--num_params_per_env", type=int, default=3,
+                    help="How many TA params to perturb per env. Use 0 to keep all envs on the shared global config.")
 parser.add_argument("--task",        type=str, default=None)
 parser.add_argument("--seed",        type=int, default=42)
 parser.add_argument("--output_dir",  type=str, default=None, help="Where to save charts/JSON.")
@@ -274,6 +276,10 @@ def run_trial(env, policy, env_param_values: dict, max_steps: int, trial_label: 
     final_time  = torch.zeros(num_envs, dtype=torch.float, device=unwrapped.device)
     final_laps  = torch.zeros(num_envs, dtype=torch.int,   device=unwrapped.device)
     final_gates = torch.zeros(num_envs, dtype=torch.int,   device=unwrapped.device)
+    start_z     = unwrapped._robot.data.root_link_pos_w[:, 2].clone()
+    max_z       = start_z.clone()
+    ground_start = start_z <= 0.12
+    first_gate_success = torch.zeros(num_envs, dtype=torch.bool, device=unwrapped.device)
 
     # Sim2real metrics: track control signals and flight quality across all envs
     # Running accumulators (no per-step storage to keep memory bounded)
@@ -301,6 +307,8 @@ def run_trial(env, policy, env_param_values: dict, max_steps: int, trial_label: 
 
             # ── Reapply per-env params (reset_idx overwrites them) ───────────
             apply_per_env_params(unwrapped, env_param_values)
+            max_z = torch.maximum(max_z, unwrapped._robot.data.root_link_pos_w[:, 2])
+            first_gate_success |= (pre_gates >= 1) | (unwrapped._n_gates_passed >= 1)
 
             # ── Accumulate sim2real metrics for active (not finished) envs ───
             active = ~finished
@@ -364,6 +372,9 @@ def run_trial(env, policy, env_param_values: dict, max_steps: int, trial_label: 
         final_time[ids]  = unwrapped.episode_length_buf[ids].float() * dt
         final_gates[ids] = unwrapped._n_gates_passed[ids]
         final_laps[ids]  = final_gates[ids] // num_gates
+    first_gate_success |= final_gates >= 1
+    takeoff_threshold = torch.maximum(start_z + 0.15, torch.full_like(start_z, 0.20))
+    takeoff_success = max_z >= takeoff_threshold
 
     # Compute per-env summary statistics
     safe_counts = step_counts.float().clamp(min=1)
@@ -380,6 +391,9 @@ def run_trial(env, policy, env_param_values: dict, max_steps: int, trial_label: 
         "time":     final_time.cpu().numpy(),
         "laps":     final_laps.cpu().numpy(),
         "finished": finished.cpu().numpy(),
+        "ground_start": ground_start.cpu().numpy(),
+        "takeoff_success": takeoff_success.cpu().numpy(),
+        "first_gate_success": first_gate_success.cpu().numpy(),
         # Sim2real metrics
         "mean_thrust":      mean_thrust,
         "std_thrust":       std_thrust,
@@ -528,39 +542,56 @@ def build_charts(trial_results, out_dir, num_envs):
                 param_succ[nm] += ok
                 if ok:
                     param_times[nm].append(times_arr[env_id])
-    sorted_p = sorted(param_used.keys(),
-                      key=lambda k: param_succ[k] / max(param_used[k], 1))
-    p_labels = [PARAM_LABELS.get(k, k) for k in sorted_p]
-    p_wr     = [100.0 * param_succ[k] / param_used[k] if param_used[k] > 0 else 0.0
-                for k in sorted_p]
-    p_mean_t = [float(np.mean(param_times[k])) if param_times[k] else float("nan")
-                for k in sorted_p]
-    fig3, (axA, axC) = plt.subplots(1, 2, figsize=(14, 5), constrained_layout=True)
-    _style(fig3, [axA, axC])
-    fig3.suptitle("Per-Parameter Analysis (pooled across all envs & trials)",
-                  color=PALETTE["text"], fontsize=12, fontweight="bold")
-    wr_colors = [PALETTE["success"] if w >= 80 else PALETTE["warn"] if w >= 50
-                 else PALETTE["fail"] for w in p_wr]
-    axA.barh(p_labels, p_wr, color=wr_colors, edgecolor=PALETTE["bg"], zorder=3)
-    axA.axvline(80, color=PALETTE["success"], ls=":", lw=1.2, alpha=0.7)
-    axA.set_xlim(0, 108)
-    axA.set_xlabel("Success Rate when param perturbed (%)", color=PALETTE["text"])
-    axA.set_title("Success Rate by Perturbed Param", color=PALETTE["text"])
-    for i, wr in enumerate(p_wr):
-        axA.text(min(wr + 1, 105), i, f"{wr:.0f}%", va="center", fontsize=8, color=PALETTE["text"])
-    valid_t  = [t if not np.isnan(t) else 0 for t in p_mean_t]
-    t_colors = [PALETTE["accent"] if not np.isnan(t) else PALETTE["fail"] for t in p_mean_t]
-    axC.barh(p_labels, valid_t, color=t_colors, edgecolor=PALETTE["bg"], zorder=3)
-    if len(success_times) > 0:
-        axC.axvline(float(success_times.mean()), color=PALETTE["accent2"],
-                    ls="--", lw=1.5, label=f"Overall mean {success_times.mean():.2f}s")
-        axC.legend(facecolor=PALETTE["card"], edgecolor=PALETTE["grid"],
-                   labelcolor=PALETTE["text"], fontsize=8)
-    axC.set_xlabel("Mean 3-Lap Time when param perturbed (s)", color=PALETTE["text"])
-    axC.set_title("Mean Lap Time by Perturbed Param", color=PALETTE["text"])
-    for i, t in enumerate(p_mean_t):
-        if not np.isnan(t):
-            axC.text(t + 0.1, i, f"{t:.1f}s", va="center", fontsize=8, color=PALETTE["text"])
+    total_param_uses = sum(param_used.values())
+    if total_param_uses == 0:
+        fig3, ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
+        _style(fig3, ax)
+        fig3.suptitle("Per-Parameter Analysis", color=PALETTE["text"], fontsize=12, fontweight="bold")
+        ax.axis("off")
+        ax.text(
+            0.5,
+            0.5,
+            "No per-env TA parameter perturbations were enabled in this run.\n"
+            "All envs shared the same global environment profile.",
+            ha="center",
+            va="center",
+            color=PALETTE["text"],
+            fontsize=12,
+        )
+    else:
+        sorted_p = sorted(param_used.keys(),
+                          key=lambda k: param_succ[k] / max(param_used[k], 1))
+        p_labels = [PARAM_LABELS.get(k, k) for k in sorted_p]
+        p_wr     = [100.0 * param_succ[k] / param_used[k] if param_used[k] > 0 else 0.0
+                    for k in sorted_p]
+        p_mean_t = [float(np.mean(param_times[k])) if param_times[k] else float("nan")
+                    for k in sorted_p]
+        fig3, (axA, axC) = plt.subplots(1, 2, figsize=(14, 5), constrained_layout=True)
+        _style(fig3, [axA, axC])
+        fig3.suptitle("Per-Parameter Analysis (pooled across all envs & trials)",
+                      color=PALETTE["text"], fontsize=12, fontweight="bold")
+        wr_colors = [PALETTE["success"] if w >= 80 else PALETTE["warn"] if w >= 50
+                     else PALETTE["fail"] for w in p_wr]
+        axA.barh(p_labels, p_wr, color=wr_colors, edgecolor=PALETTE["bg"], zorder=3)
+        axA.axvline(80, color=PALETTE["success"], ls=":", lw=1.2, alpha=0.7)
+        axA.set_xlim(0, 108)
+        axA.set_xlabel("Success Rate when param perturbed (%)", color=PALETTE["text"])
+        axA.set_title("Success Rate by Perturbed Param", color=PALETTE["text"])
+        for i, wr in enumerate(p_wr):
+            axA.text(min(wr + 1, 105), i, f"{wr:.0f}%", va="center", fontsize=8, color=PALETTE["text"])
+        valid_t  = [t if not np.isnan(t) else 0 for t in p_mean_t]
+        t_colors = [PALETTE["accent"] if not np.isnan(t) else PALETTE["fail"] for t in p_mean_t]
+        axC.barh(p_labels, valid_t, color=t_colors, edgecolor=PALETTE["bg"], zorder=3)
+        if len(success_times) > 0:
+            axC.axvline(float(success_times.mean()), color=PALETTE["accent2"],
+                        ls="--", lw=1.5, label=f"Overall mean {success_times.mean():.2f}s")
+            axC.legend(facecolor=PALETTE["card"], edgecolor=PALETTE["grid"],
+                       labelcolor=PALETTE["text"], fontsize=8)
+        axC.set_xlabel("Mean 3-Lap Time when param perturbed (s)", color=PALETTE["text"])
+        axC.set_title("Mean Lap Time by Perturbed Param", color=PALETTE["text"])
+        for i, t in enumerate(p_mean_t):
+            if not np.isnan(t):
+                axC.text(t + 0.1, i, f"{t:.1f}s", va="center", fontsize=8, color=PALETTE["text"])
     p3 = os.path.join(out_dir, "batch_eval_param_analysis.png")
     fig3.savefig(p3, dpi=150, bbox_inches="tight", facecolor=PALETTE["bg"])
     plt.close(fig3)
@@ -571,6 +602,11 @@ def build_charts(trial_results, out_dir, num_envs):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
+    if args_cli.num_params_per_env < 0 or args_cli.num_params_per_env > len(TA_PARAM_POOL):
+        raise ValueError(
+            f"--num_params_per_env must be in [0, {len(TA_PARAM_POOL)}], got {args_cli.num_params_per_env}"
+        )
+
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     log_root = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
     resume_path = get_checkpoint_path(log_root, agent_cfg.load_run, agent_cfg.load_checkpoint)
@@ -633,7 +669,10 @@ def main():
 
     print(f"\n{'#'*60}")
     print(f"  BATCH EVAL: {args_cli.num_trials} trials × {args_cli.num_envs} envs")
-    print(f"  Each env: independently sample 3 TA params")
+    if args_cli.num_params_per_env > 0:
+        print(f"  Each env: independently sample {args_cli.num_params_per_env} TA params")
+    else:
+        print(f"  Each env: shared global config only (no per-env TA param perturbation)")
     print(f"{'#'*60}")
 
     trial_results = []
@@ -641,11 +680,17 @@ def main():
     for t_idx in range(args_cli.num_trials):
         print(f"\n{'='*60}")
         print(f"  TRIAL {t_idx+1}/{args_cli.num_trials}")
-        print(f"  Sampling independent 3-param configs for each of the {args_cli.num_envs} envs...")
+        if args_cli.num_params_per_env > 0:
+            print(
+                f"  Sampling independent {args_cli.num_params_per_env}-param configs "
+                f"for each of the {args_cli.num_envs} envs..."
+            )
+        else:
+            print(f"  Reusing one shared global config across all {args_cli.num_envs} envs...")
 
         # Sample independent configs per env
         env_configs, param_values = sample_per_env_params(
-            cfg, num_envs=args_cli.num_envs, num_params=3, rng=rng
+            cfg, num_envs=args_cli.num_envs, num_params=args_cli.num_params_per_env, rng=rng
         )
 
         # Print a quick summary of what was sampled
@@ -653,9 +698,12 @@ def main():
         for ecfg in env_configs:
             for pc in ecfg:
                 param_freq[pc["name"]] = param_freq.get(pc["name"], 0) + 1
-        print("  Param sampling frequency across envs:")
-        for name, cnt in sorted(param_freq.items(), key=lambda x: -x[1]):
-            print(f"    {PARAM_LABELS.get(name, name):<14} sampled in {cnt}/{args_cli.num_envs} envs")
+        if param_freq:
+            print("  Param sampling frequency across envs:")
+            for name, cnt in sorted(param_freq.items(), key=lambda x: -x[1]):
+                print(f"    {PARAM_LABELS.get(name, name):<14} sampled in {cnt}/{args_cli.num_envs} envs")
+        else:
+            print("  Param sampling frequency across envs: none (shared global config)")
 
         # Apply to the live tensors (also called each step inside run_trial)
         apply_per_env_params(unwrapped, param_values)
@@ -666,9 +714,17 @@ def main():
         laps_arr  = raw["laps"]
         time_arr  = raw["time"]
         gates_arr = raw["gates"]
+        takeoff_arr = raw["takeoff_success"].astype(bool)
+        first_gate_arr = raw["first_gate_success"].astype(bool)
+        ground_arr = raw["ground_start"].astype(bool)
         success_mask = laps_arr >= 3
         success_rate = float(success_mask.mean() * 100)
         mean_t = float(time_arr[success_mask].mean()) if success_mask.any() else float("nan")
+        takeoff_rate = float(takeoff_arr.mean() * 100)
+        first_gate_rate = float(first_gate_arr.mean() * 100)
+        n_ground = int(ground_arr.sum())
+        ground_takeoff_rate = float(takeoff_arr[ground_arr].mean() * 100) if n_ground > 0 else float("nan")
+        ground_first_gate_rate = float(first_gate_arr[ground_arr].mean() * 100) if n_ground > 0 else float("nan")
 
         # Extra-gate detection: clean 3-lap = exactly 3*num_gates passes.
         # If drone goes backward through a gate, gates_passed > target.
@@ -679,6 +735,13 @@ def main():
         pct_detour = float((extra_gates_arr > 0).mean() * 100) if success_mask.any() else float("nan")
 
         print(f"\n  TRIAL {t_idx+1} RESULT:")
+        if n_ground > 0:
+            print(f"    Ground starts       : {n_ground}/{args_cli.num_envs}")
+            print(f"    Takeoff Success     : {ground_takeoff_rate:.1f}% on ground starts ({takeoff_rate:.1f}% overall)")
+            print(f"    First-Gate Success  : {ground_first_gate_rate:.1f}% on ground starts ({first_gate_rate:.1f}% overall)")
+        else:
+            print(f"    Takeoff Success     : {takeoff_rate:.1f}%")
+            print(f"    First-Gate Success  : {first_gate_rate:.1f}%")
         print(f"    3-Lap Success Rate : {success_rate:.1f}% ({success_mask.sum()}/{args_cli.num_envs})")
         if not np.isnan(mean_t):
             print(f"    Mean 3-Lap Time    : {mean_t:.2f}s")
@@ -710,6 +773,11 @@ def main():
         trial_results.append({
             "trial": t_idx + 1,
             "success_rate_pct": success_rate,
+            "takeoff_success_pct": takeoff_rate,
+            "first_gate_success_pct": first_gate_rate,
+            "ground_takeoff_success_pct": ground_takeoff_rate,
+            "ground_first_gate_success_pct": ground_first_gate_rate,
+            "n_ground_starts": n_ground,
             "mean_3lap_time": mean_t,
             "mean_extra_gates": mean_extra,
             "pct_detour_envs": pct_detour,
@@ -719,6 +787,9 @@ def main():
             "raw_time":  time_arr.tolist(),
             "raw_gates": gates_arr.tolist(),
             "raw_finished": raw["finished"].tolist(),
+            "raw_takeoff_success": takeoff_arr.tolist(),
+            "raw_first_gate_success": first_gate_arr.tolist(),
+            "raw_ground_start": ground_arr.tolist(),
         })
 
     # ── Overall summary ───────────────────────────────────────────────────────
@@ -731,13 +802,29 @@ def main():
         np.array(r["raw_time"])[np.array(r["raw_laps"]) >= 3]
         for r in trial_results
     ]) if trial_results else np.array([])
+    all_takeoff = np.concatenate([np.array(r["raw_takeoff_success"], dtype=bool) for r in trial_results]) if trial_results else np.array([], dtype=bool)
+    all_first_gate = np.concatenate([np.array(r["raw_first_gate_success"], dtype=bool) for r in trial_results]) if trial_results else np.array([], dtype=bool)
+    all_ground = np.concatenate([np.array(r["raw_ground_start"], dtype=bool) for r in trial_results]) if trial_results else np.array([], dtype=bool)
+    overall_takeoff = float(all_takeoff.mean() * 100) if len(all_takeoff) > 0 else float("nan")
+    overall_first_gate = float(all_first_gate.mean() * 100) if len(all_first_gate) > 0 else float("nan")
+    overall_ground_takeoff = float(all_takeoff[all_ground].mean() * 100) if all_ground.any() else float("nan")
+    overall_ground_first_gate = float(all_first_gate[all_ground].mean() * 100) if all_ground.any() else float("nan")
 
     print(f"\n{'#'*60}")
     print(f"  OVERALL SUMMARY")
     print(f"{'#'*60}")
     print(f"  Trials:        {args_cli.num_trials}")
-    print(f"  Envs/trial:    {args_cli.num_envs}  (each with independent 3-param DR)")
+    if args_cli.num_params_per_env > 0:
+        print(f"  Envs/trial:    {args_cli.num_envs}  (each with independent {args_cli.num_params_per_env}-param DR)")
+    else:
+        print(f"  Envs/trial:    {args_cli.num_envs}  (shared global config)")
     print(f"  Total episodes:{args_cli.num_trials * args_cli.num_envs}")
+    if all_ground.any():
+        print(f"  Takeoff SR:    {overall_ground_takeoff:.1f}% on ground starts ({overall_takeoff:.1f}% overall)")
+        print(f"  First-gate SR: {overall_ground_first_gate:.1f}% on ground starts ({overall_first_gate:.1f}% overall)")
+    else:
+        print(f"  Takeoff SR:    {overall_takeoff:.1f}%")
+        print(f"  First-gate SR: {overall_first_gate:.1f}%")
     print(f"  Overall SR:    {overall_sr:.1f}%  ({int(len(all_success_times))}/{args_cli.num_trials * args_cli.num_envs} envs hit 3 laps)")
     if len(all_success_times) > 0:
         print(f"  3-lap time:    mean={all_success_times.mean():.2f}s  "
@@ -773,6 +860,11 @@ def main():
         entry = {
             "trial": r["trial"],
             "success_rate_pct": r["success_rate_pct"],
+            "takeoff_success_pct": r["takeoff_success_pct"],
+            "first_gate_success_pct": r["first_gate_success_pct"],
+            "ground_takeoff_success_pct": r["ground_takeoff_success_pct"] if not np.isnan(r["ground_takeoff_success_pct"]) else None,
+            "ground_first_gate_success_pct": r["ground_first_gate_success_pct"] if not np.isnan(r["ground_first_gate_success_pct"]) else None,
+            "n_ground_starts": r["n_ground_starts"],
             "mean_3lap_time": r["mean_3lap_time"] if not np.isnan(r["mean_3lap_time"]) else None,
             "laps_mean": float(np.mean(r["raw_laps"])),
             "laps_max": int(np.max(r["raw_laps"])),
@@ -784,6 +876,11 @@ def main():
     with open(json_path, "w") as f:
         overall_entry = {
             "success_rate_pct": overall_sr,
+            "takeoff_success_pct": overall_takeoff,
+            "first_gate_success_pct": overall_first_gate,
+            "ground_takeoff_success_pct": overall_ground_takeoff if not np.isnan(overall_ground_takeoff) else None,
+            "ground_first_gate_success_pct": overall_ground_first_gate if not np.isnan(overall_ground_first_gate) else None,
+            "n_ground_starts": int(all_ground.sum()),
             "mean_3lap_time": overall_time if not np.isnan(overall_time) else None,
         }
         if len(all_success_times) > 0:

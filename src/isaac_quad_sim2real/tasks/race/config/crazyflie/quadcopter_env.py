@@ -130,10 +130,17 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     use_wall = False
     track_name = 'circle'
     action_latency_max = 2          # fixed baseline: 2 policy steps matches current bag-derived lag cluster
+    fixed_action_delay_steps = -1   # when >= 0, use a deterministic action delay instead of sampling [0, action_latency_max]
     mass_variation = 0.0            # fixed baseline: disable until re-identified on fresh bags
     motor_tau_scale_min = 1.0       # fixed baseline: no extra motor-tau DR
     motor_tau_scale_max = 1.0
     obs_latency_prob = 0.0          # fixed baseline: keep off; re-ablate separately now that it works
+    fixed_obs_delay_steps = 0       # deterministic observation delay in policy steps
+    obs_noise_std_scale = 1.0       # scales the built-in sim2real observation noise
+    obs_lin_vel_noise_std = 0.0     # extra zero-mean noise added only to body-frame linear velocity obs
+    obs_yaw_bias_deg = 0.0          # deterministic yaw bias applied to observation frame
+    obs_lin_vel_bias = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    obs_gate_corner_bias = field(default_factory=lambda: [0.0, 0.0, 0.0])
     use_spline_reset = False        # fixed baseline: rely on replay + ground + linear interp resets
     spline_vel_min = 0.5            # only used when use_spline_reset=True
     spline_vel_max = 1.5
@@ -234,6 +241,9 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
 
     body_rate_scale_xy = 100.0 * D2R
     body_rate_scale_z = 200.0 * D2R
+    thrust_to_weight = 3.15
+    thrust_to_weight_scale = 1.0
+    body_rate_gain_scale = 1.0
 
     # Parameters from train.py or play.py
     is_train = None
@@ -272,16 +282,26 @@ class QuadcopterEnv(DirectRLEnv):
         self._previous_actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
         self._previous_yaw = torch.zeros(self.num_envs, device=self.device)
 
-        # Action latency randomization (disabled by default in V4; set action_latency_max > 0 to enable)
-        self._action_latency_max = getattr(self.cfg, "action_latency_max", 0)
+        # Action latency can be either sampled per-env (training behavior) or fixed
+        # for deterministic robustness tests.
+        self._fixed_action_delay_steps = int(getattr(self.cfg, "fixed_action_delay_steps", -1))
+        self._fixed_action_delay_steps = max(-1, self._fixed_action_delay_steps)
+        self._action_latency_max = max(
+            int(getattr(self.cfg, "action_latency_max", 0)),
+            max(self._fixed_action_delay_steps, 0),
+        )
         self._action_buffer = torch.zeros(
             self._action_latency_max + 1, self.num_envs, self.cfg.action_space, device=self.device
         )
         self._action_delay = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        if self.cfg.is_train:
-            self._action_delay = torch.randint(
-                0, self._action_latency_max + 1, (self.num_envs,), device=self.device
-            )
+        self._use_action_latency = bool(self.cfg.is_train) or (self._fixed_action_delay_steps >= 0)
+        if self._use_action_latency and self._action_latency_max > 0:
+            if self._fixed_action_delay_steps >= 0:
+                self._action_delay.fill_(self._fixed_action_delay_steps)
+            else:
+                self._action_delay = torch.randint(
+                    0, self._action_latency_max + 1, (self.num_envs,), device=self.device
+                )
 
         self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
@@ -302,8 +322,18 @@ class QuadcopterEnv(DirectRLEnv):
 
         self._crashed = torch.zeros(self.num_envs, device=self.device, dtype=torch.int)
 
-        # Motor dynamics
-        self.cfg.thrust_to_weight = 3.15
+        # Motor dynamics. `thrust_to_weight_scale` and `body_rate_gain_scale`
+        # are deterministic mismatch knobs used during robustness evaluation.
+        self.cfg.thrust_to_weight = float(getattr(self.cfg, "thrust_to_weight", 3.15)) * float(
+            getattr(self.cfg, "thrust_to_weight_scale", 1.0)
+        )
+        body_rate_gain_scale = float(getattr(self.cfg, "body_rate_gain_scale", 1.0))
+        self.cfg.kp_omega_rp *= body_rate_gain_scale
+        self.cfg.ki_omega_rp *= body_rate_gain_scale
+        self.cfg.kd_omega_rp *= body_rate_gain_scale
+        self.cfg.kp_omega_y *= body_rate_gain_scale
+        self.cfg.ki_omega_y *= body_rate_gain_scale
+        self.cfg.kd_omega_y *= body_rate_gain_scale
         r = self.cfg.arm_length * np.sqrt(2.0) / 2.0
         self._rotor_positions = torch.tensor(
             [
@@ -663,7 +693,7 @@ class QuadcopterEnv(DirectRLEnv):
         raw_actions = actions.clone().clamp(-1.0, 1.0)
 
         # Action latency: shift buffer forward, push new action, read delayed action
-        if self.cfg.is_train and self._action_latency_max > 0:
+        if self._use_action_latency and self._action_latency_max > 0:
             self._action_buffer = self._action_buffer.roll(1, dims=0)
             self._action_buffer[0] = raw_actions
             # Each env reads from its own delay slot
@@ -748,10 +778,13 @@ class QuadcopterEnv(DirectRLEnv):
         self.strategy.reset_idx(env_ids)
 
         # Re-randomize action latency for reset envs
-        if self.cfg.is_train and self._action_latency_max > 0:
-            self._action_delay[env_ids] = torch.randint(
-                0, self._action_latency_max + 1, (len(env_ids),), device=self.device
-            )
+        if self._use_action_latency and self._action_latency_max > 0:
+            if self._fixed_action_delay_steps >= 0:
+                self._action_delay[env_ids] = self._fixed_action_delay_steps
+            else:
+                self._action_delay[env_ids] = torch.randint(
+                    0, self._action_latency_max + 1, (len(env_ids),), device=self.device
+                )
             self._action_buffer[:, env_ids] = 0.0
 
         # Call parent class reset (required for environment state)
