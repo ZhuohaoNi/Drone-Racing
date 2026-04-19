@@ -9,6 +9,7 @@
 
 import sys
 import os
+import json
 local_rsl_path = os.path.abspath("src/third_parties/rsl_rl_local")
 if os.path.exists(local_rsl_path):
     sys.path.insert(0, local_rsl_path)
@@ -76,6 +77,14 @@ def main():
     env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
     )
+    if "ENV_OVERRIDES" in os.environ:
+        try:
+            env_overrides = json.loads(os.environ["ENV_OVERRIDES"])
+            for k, v in env_overrides.items():
+                setattr(env_cfg, k, v)
+            print(f"[INFO] Applied ENV_OVERRIDES: {env_overrides}")
+        except Exception as e:
+            print(f"[Warning] Failed to parse ENV_OVERRIDES: {e}")
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -99,9 +108,21 @@ def main():
     env_cfg.is_train = False
     env_cfg.max_motor_noise_std = 0.0
     env_cfg.seed = args_cli.seed
+    env_cfg.rewards = {
+        'gate_pass_reward_scale': 0.0,
+        'progress_goal_reward_scale': 0.0,
+        'lap_complete_reward_scale': 0.0,
+        'death_cost': 0.0,
+        'lap_incomplete_penalty_scale': 0.0,
+        'cmd_reg_rp_scale': 0.0,
+        'cmd_reg_yaw_scale': 0.0,
+        'crash_reward_scale': 0.0,
+        'crash_contact_scale': 0.0,
+        'cmd_smoothness_scale': 0.0,
+    }
 
     # create isaac environment
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None, rewards=env_cfg.rewards)
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):

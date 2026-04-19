@@ -103,7 +103,19 @@ def main():
 
     env_cfg.is_train = False
     env_cfg.seed = args_cli.seed
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array")
+    env_cfg.rewards = {
+        'gate_pass_reward_scale': 0.0,
+        'progress_goal_reward_scale': 0.0,
+        'lap_complete_reward_scale': 0.0,
+        'death_cost': 0.0,
+        'lap_incomplete_penalty_scale': 0.0,
+        'cmd_reg_rp_scale': 0.0,
+        'cmd_reg_yaw_scale': 0.0,
+        'crash_reward_scale': 0.0,
+        'crash_contact_scale': 0.0,
+        'cmd_smoothness_scale': 0.0,
+    }
+    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array", rewards=env_cfg.rewards)
     if isinstance(env.unwrapped, DirectMARLEnv): env = multi_agent_to_single_agent(env)
     
     vid_name = f"{args_cli.video_name}_seed_{args_cli.seed}"

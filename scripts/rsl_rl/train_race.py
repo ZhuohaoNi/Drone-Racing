@@ -108,9 +108,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # TODO ----- START ----- Define rewards scales
     # Fixed sim2real baseline: V3 sparse reward core + light action smoothness.
+    # Optional R1 terms (progress + lap_complete) default to zero so the baseline
+    # remains unchanged unless explicitly enabled.
     # gate_pass must dominate continuous negative terms to prevent policy collapse.
     # Values can be overridden via environment variables (e.g. REW_CMD_REG_RP=-2.0).
     gate_pass_reward_scale = float(os.environ.get('REW_GATE_PASS', 200.0))
+    progress_goal_reward_scale = float(os.environ.get('REW_PROGRESS_GOAL', 0.0))
+    lap_complete_reward_scale = float(os.environ.get('REW_LAP_COMPLETE', 0.0))
     death_cost = float(os.environ.get('REW_DEATH_COST', -100.0))
     lap_incomplete_penalty_scale = float(os.environ.get('REW_LAP_INCOMPLETE', -0.05))
     cmd_reg_rp_scale = float(os.environ.get('REW_CMD_REG_RP', -1.0))
@@ -121,6 +125,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     rewards = {
         'gate_pass_reward_scale': gate_pass_reward_scale,
+        'progress_goal_reward_scale': progress_goal_reward_scale,
+        'lap_complete_reward_scale': lap_complete_reward_scale,
         'death_cost': death_cost,
         'lap_incomplete_penalty_scale': lap_incomplete_penalty_scale,
         'cmd_reg_rp_scale': cmd_reg_rp_scale,
@@ -141,6 +147,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     env_cfg.is_train = True
     env_cfg.rewards = rewards
+
+    # Training-only performance tweaks (no effect on physics/observations):
+    #   - debug_vis off: skip per-step goal-marker update callback
+    #   - render_interval x20: we're headless w/o video, no reason to render at 50 Hz
+    #   - contact history=1: strategies only read current-step net_forces_w
+    # play_race.py / eval_race.py don't go through this block, so their UX is
+    # unchanged (markers + normal render rate still available there).
+    if not args_cli.video:
+        env_cfg.debug_vis = False
+        env_cfg.sim.render_interval = env_cfg.decimation * 20
+    env_cfg.contact_sensor.history_length = 1
 
     if "ENV_OVERRIDES" in os.environ:
         try:

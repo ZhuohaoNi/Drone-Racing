@@ -26,6 +26,7 @@ Usage:
 import sys
 import os
 import time
+import json
 local_rsl_path = os.path.abspath("src/third_parties/rsl_rl_local")
 if os.path.exists(local_rsl_path):
     sys.path.insert(0, local_rsl_path)
@@ -196,11 +197,31 @@ def main():
     env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=1, use_fabric=not args_cli.disable_fabric
     )
+    if "ENV_OVERRIDES" in os.environ:
+        try:
+            env_overrides = json.loads(os.environ["ENV_OVERRIDES"])
+            for k, v in env_overrides.items():
+                setattr(env_cfg, k, v)
+            print(f"[INFO] Applied ENV_OVERRIDES (Phase 1): {env_overrides}")
+        except Exception as e:
+            print(f"[Warning] Failed to parse ENV_OVERRIDES for Phase 1: {e}")
     env_cfg.is_train = False
     env_cfg.max_motor_noise_std = 0.0
     env_cfg.seed = args_cli.seed
+    env_cfg.rewards = {
+        'gate_pass_reward_scale': 0.0,
+        'progress_goal_reward_scale': 0.0,
+        'lap_complete_reward_scale': 0.0,
+        'death_cost': 0.0,
+        'lap_incomplete_penalty_scale': 0.0,
+        'cmd_reg_rp_scale': 0.0,
+        'cmd_reg_yaw_scale': 0.0,
+        'crash_reward_scale': 0.0,
+        'crash_contact_scale': 0.0,
+        'cmd_smoothness_scale': 0.0,
+    }
 
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None, rewards=env_cfg.rewards)
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
@@ -231,6 +252,11 @@ def main():
     # ===============================================
     #  PHASE 2: DR with multiple envs
     # ===============================================
+    if args_cli.num_dr_envs <= 0:
+        print("\n[INFO] Skipping Phase 2 DR evaluation because --num_dr_envs <= 0")
+        simulation_app.close()
+        return
+
     print("\n" + "="*60)
     print(f"  PHASE 2: Domain Randomization ({args_cli.num_dr_envs} envs)")
     print("  Initializing environment... (this takes 1-2 min)")
@@ -240,17 +266,28 @@ def main():
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_dr_envs,
         use_fabric=not args_cli.disable_fabric
     )
+    if "ENV_OVERRIDES" in os.environ:
+        try:
+            env_overrides = json.loads(os.environ["ENV_OVERRIDES"])
+            for k, v in env_overrides.items():
+                setattr(env_cfg2, k, v)
+            print(f"[INFO] Applied ENV_OVERRIDES (Phase 2): {env_overrides}")
+        except Exception as e:
+            print(f"[Warning] Failed to parse ENV_OVERRIDES for Phase 2: {e}")
     env_cfg2.is_train = True  # Enable DR by using train mode
     env_cfg2.seed = args_cli.seed
     # Provide dummy rewards since is_train=True requires them
     env_cfg2.rewards = {
-        'progress_goal_reward_scale': 0.0,
         'gate_pass_reward_scale': 0.0,
-        'vel_toward_gate_reward_scale': 0.0,
-        'orientation_reward_scale': 0.0,
-        'smoothness_reward_scale': 0.0,
-        'crash_reward_scale': 0.0,
+        'progress_goal_reward_scale': 0.0,
+        'lap_complete_reward_scale': 0.0,
         'death_cost': 0.0,
+        'lap_incomplete_penalty_scale': 0.0,
+        'cmd_reg_rp_scale': 0.0,
+        'cmd_reg_yaw_scale': 0.0,
+        'crash_reward_scale': 0.0,
+        'crash_contact_scale': 0.0,
+        'cmd_smoothness_scale': 0.0,
     }
 
     env2 = gym.make(args_cli.task, cfg=env_cfg2, rewards=env_cfg2.rewards)

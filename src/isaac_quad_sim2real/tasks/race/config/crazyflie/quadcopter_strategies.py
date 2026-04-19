@@ -696,7 +696,15 @@ class CircleQuadcopterStrategy:
         if self.cfg.is_train and hasattr(env, 'rew'):
             self._episode_sums = {
                 key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-                for key in ["gate_pass", "lap_incomplete", "cmd_reg", "crash"]
+                for key in [
+                    "gate_pass",
+                    "progress_goal",
+                    "lap_complete",
+                    "lap_incomplete",
+                    "cmd_reg",
+                    "cmd_smoothness",
+                    "crash",
+                ]
             }
 
         self._lap_start_step = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -706,11 +714,39 @@ class CircleQuadcopterStrategy:
         self._steps_since_gate_pass = torch.full((self.num_envs,), 999, dtype=torch.long, device=self.device)
         self._wrong_side_count = 0
 
+        # Approach-zone gating: gate_pass only fires if the drone has reached at
+        # least `approach_x_threshold` on the +x (approach) side of the current
+        # target gate since the last gate change. Prevents micro-U-turn exploit
+        # at powerloop Gate 3 where the drone would briefly poke +x and fall
+        # back through to trigger gate_pass without a real detour.
+        self._max_x_since_gate_change = torch.full(
+            (self.num_envs,), -float('inf'), dtype=torch.float, device=self.device
+        )
+        self._approach_x_threshold = float(
+            getattr(self.cfg, "approach_x_threshold", 0.3)
+        )
+
+        # Previous-gate backtrack detection: after passing gate N, the drone
+        # must not reverse-cross N's plane to re-reach the +x approach side
+        # (then poke through again to hit N+1). Tracks x in prev-gate frame.
+        self._prev_x_drone_wrt_prev_gate = torch.zeros(
+            self.num_envs, dtype=torch.float, device=self.device
+        )
+        # Runtime switch to disable Fix B — needed when evaluating checkpoints
+        # trained before Fix B was added (they never learned to avoid looping
+        # back through a prev gate, so the check kills them in e.g. powerloop).
+        self._backtrack_check_enabled = bool(
+            getattr(self.cfg, "backtrack_check_enabled", True)
+        )
+
         # Swift-style reset support: cache states observed near successful gate passes
         # and replay them with small perturbations during future resets.
         self._replay_capacity = 256
-        self._replay_ratio = 0.3
-        self._ground_reset_ratio = 0.2
+        self._replay_ratio = float(getattr(self.cfg, "replay_reset_ratio", 0.3))
+        self._ground_reset_ratio = float(getattr(self.cfg, "ground_reset_ratio", 0.2))
+        self._staged_replay_reset = bool(getattr(self.cfg, "staged_replay_reset", False))
+        self._replay_warmup_iterations = int(getattr(self.cfg, "replay_warmup_iterations", 0))
+        self._replay_full_iterations = int(getattr(self.cfg, "replay_full_iterations", 0))
         self._num_gates = int(self.env._waypoints.shape[0])
         self._gate_replay_root_state = torch.zeros(
             self._num_gates, self._replay_capacity, 13, dtype=torch.float, device=self.device
@@ -743,28 +779,35 @@ class CircleQuadcopterStrategy:
         n = len(env_ids)
         cfg = self.cfg
 
-        # TWR ±15% (unchanged from V2)
+        # TWR randomization is configurable so D1 can switch to a more moderate range
+        twr_pct = max(0.0, float(getattr(cfg, "twr_randomization_pct", 0.15)))
         self.env._thrust_to_weight[env_ids] = torch.empty(n, device=self.device).uniform_(
-            cfg.thrust_to_weight * 0.85, cfg.thrust_to_weight * 1.15)
+            cfg.thrust_to_weight * (1.0 - twr_pct), cfg.thrust_to_weight * (1.0 + twr_pct)
+        )
 
-        # Aero drag 0.2-3.0x (V2 range — wider than V3/V4)
-        k_xy_min, k_xy_max = cfg.k_aero_xy * 0.2, cfg.k_aero_xy * 3.0
-        k_z_min,  k_z_max  = cfg.k_aero_z  * 0.2, cfg.k_aero_z  * 3.0
+        # Aero drag scales are configurable so D1 can match Song/Ferede-style moderate DR.
+        aero_scale_min = float(getattr(cfg, "aero_randomization_scale_min", 0.2))
+        aero_scale_max = float(getattr(cfg, "aero_randomization_scale_max", 3.0))
+        aero_scale_min, aero_scale_max = sorted((aero_scale_min, aero_scale_max))
+        k_xy_min, k_xy_max = cfg.k_aero_xy * aero_scale_min, cfg.k_aero_xy * aero_scale_max
+        k_z_min,  k_z_max  = cfg.k_aero_z  * aero_scale_min, cfg.k_aero_z  * aero_scale_max
         self.env._K_aero[env_ids, 0] = torch.empty(n, device=self.device).uniform_(k_xy_min, k_xy_max)
         self.env._K_aero[env_ids, 1] = torch.empty(n, device=self.device).uniform_(k_xy_min, k_xy_max)
         self.env._K_aero[env_ids, 2] = torch.empty(n, device=self.device).uniform_(k_z_min,  k_z_max)
 
-        # PID kp/ki ±35%, kd ±50% (V2 range — wider than V3/V4)
-        self.env._kp_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_rp * 0.65, cfg.kp_omega_rp * 1.35)
+        # PID randomization is configurable so D1 can use the narrower real-racing ranges.
+        kpki_pct = max(0.0, float(getattr(cfg, "pid_kpki_randomization_pct", 0.35)))
+        kd_pct = max(0.0, float(getattr(cfg, "pid_kd_randomization_pct", 0.5)))
+        self.env._kp_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_rp * (1.0 - kpki_pct), cfg.kp_omega_rp * (1.0 + kpki_pct))
         self.env._kp_omega[env_ids, 1] = self.env._kp_omega[env_ids, 0]
-        self.env._ki_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_rp * 0.65, cfg.ki_omega_rp * 1.35)
+        self.env._ki_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_rp * (1.0 - kpki_pct), cfg.ki_omega_rp * (1.0 + kpki_pct))
         self.env._ki_omega[env_ids, 1] = self.env._ki_omega[env_ids, 0]
-        self.env._kd_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_rp * 0.5, cfg.kd_omega_rp * 1.5)
+        self.env._kd_omega[env_ids, 0] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_rp * (1.0 - kd_pct), cfg.kd_omega_rp * (1.0 + kd_pct))
         self.env._kd_omega[env_ids, 1] = self.env._kd_omega[env_ids, 0]
 
-        self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_y * 0.65, cfg.kp_omega_y * 1.35)
-        self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_y * 0.65, cfg.ki_omega_y * 1.35)
-        self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_y * 0.5, cfg.kd_omega_y * 1.5)
+        self.env._kp_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kp_omega_y * (1.0 - kpki_pct), cfg.kp_omega_y * (1.0 + kpki_pct))
+        self.env._ki_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.ki_omega_y * (1.0 - kpki_pct), cfg.ki_omega_y * (1.0 + kpki_pct))
+        self.env._kd_omega[env_ids, 2] = torch.empty(n, device=self.device).uniform_(cfg.kd_omega_y * (1.0 - kd_pct), cfg.kd_omega_y * (1.0 + kd_pct))
 
         # Mass randomization: ±5% (new, moderate — V4 used ±10%)
         mass_var = getattr(cfg, 'mass_variation', 0.05)
@@ -891,6 +934,26 @@ class CircleQuadcopterStrategy:
                 self._replay_capacity, int(self._gate_replay_counts[gate_slot].item()) + gate_count
             )
 
+    def _get_effective_replay_ratio(self) -> float:
+        """Optionally ramp replay resets in over training, Song-style."""
+        base_ratio = float(self._replay_ratio)
+        if (not self.cfg.is_train) or (not self._staged_replay_reset):
+            return base_ratio
+
+        warmup = max(0, int(self._replay_warmup_iterations))
+        full = max(warmup, int(self._replay_full_iterations))
+        iteration = int(self.env.iteration)
+
+        if full == warmup:
+            return base_ratio if iteration >= warmup else 0.0
+        if iteration <= warmup:
+            return 0.0
+        if iteration >= full:
+            return base_ratio
+
+        alpha = float(iteration - warmup) / float(full - warmup)
+        return base_ratio * alpha
+
     def _sample_gate_replay_resets(
         self,
         env_ids: torch.Tensor,
@@ -901,8 +964,12 @@ class CircleQuadcopterStrategy:
         if (not self.cfg.is_train) or len(env_ids) == 0:
             return torch.zeros(len(env_ids), dtype=torch.bool, device=self.device)
 
+        replay_ratio = self._get_effective_replay_ratio()
+        if replay_ratio <= 0.0:
+            return torch.zeros(len(env_ids), dtype=torch.bool, device=self.device)
+
         available = self._gate_replay_counts[target_gate_idx] > 0
-        use_replay = available & (torch.rand(len(env_ids), device=self.device) < self._replay_ratio)
+        use_replay = available & (torch.rand(len(env_ids), device=self.device) < replay_ratio)
         replay_rows = torch.where(use_replay)[0]
         if len(replay_rows) == 0:
             return use_replay
@@ -984,35 +1051,40 @@ class CircleQuadcopterStrategy:
         return use_ground
 
     def get_rewards(self) -> torch.Tensor:
-        """Sparse rewards: gate_pass + lap_complete + light cmd_reg + crash.
-
-        Inspired by Pasumarti et al. (2026) Eq. 2-6: no dense progress shaping,
-        no velocity-toward-gate, no orientation penalty. Let RL discover flight
-        behavior from sparse gate-pass signal alone.
-        """
+        """Sparse baseline reward with optional R1 gate-progress and lap bonus."""
         num_gates = self.env._waypoints.shape[0]
         gate_side = self.cfg.gate_model.gate_side
-
-        # --- Gate passing detection (sign-change in gate-frame x) ---
+        gate_half_side = gate_side / 2.0
+        dist_to_gate = torch.linalg.norm(self.env._pose_drone_wrt_gate, dim=1)
         curr_x = self.env._pose_drone_wrt_gate[:, 0]
         prev_x = self.env._prev_x_drone_wrt_gate
-        crossed_plane = (prev_x > 0) & (curr_x <= 0)
         gate_y = self.env._pose_drone_wrt_gate[:, 1]
         gate_z = self.env._pose_drone_wrt_gate[:, 2]
-        within_bounds = (gate_y.abs() < gate_side / 2.0) & (gate_z.abs() < gate_side / 2.0)
+        within_bounds = (gate_y.abs() < gate_half_side) & (gate_z.abs() < gate_half_side)
+        crossed_plane = (prev_x > 0.0) & (curr_x <= 0.0)
 
-        gate_passed = crossed_plane & within_bounds
+        # Approach-zone gate: drone must have reached the +x approach side at
+        # depth >= threshold at some point since this gate became the target.
+        # Catches the Gate-3 micro-U-turn exploit (see changelog 2026-04-18b).
+        self._max_x_since_gate_change = torch.maximum(
+            self._max_x_since_gate_change, curr_x
+        )
+        approach_valid = self._max_x_since_gate_change > self._approach_x_threshold
+
+        # Use the original default/Vineet-style pass detector so old checkpoints are
+        # evaluated against the same semantics they were effectively trained with.
+        gate_passed = (dist_to_gate < 1.0) & crossed_plane & within_bounds & approach_valid
         ids_gate_passed = torch.where(gate_passed)[0]
 
-        # --- Wrong-side crossing with cooldown (prevents reverse-through exploits) ---
-        wrong_side_crossed = (prev_x < 0) & (curr_x >= 0) & within_bounds
+        # Match the older default behavior: only punish reverse crossings of the
+        # current target gate, with a short cooldown after a valid pass.
+        wrong_side_crossed = (prev_x < 0.0) & (curr_x >= 0.0) & within_bounds
         self._steps_since_gate_pass += 1
-        cooldown_ok = (self._steps_since_gate_pass > 5)
-        wrong_side_valid = wrong_side_crossed & cooldown_ok
-        wrong_side_ids = torch.where(wrong_side_valid)[0]
+        cooldown_ok = self._steps_since_gate_pass > 5
+        wrong_side_ids = torch.where(wrong_side_crossed & cooldown_ok)[0]
         if len(wrong_side_ids) > 0:
             self.env._crashed[wrong_side_ids] = 200
-        self._wrong_side_count += len(wrong_side_ids)
+            self._wrong_side_count += len(wrong_side_ids)
 
         self.env._idx_wp[ids_gate_passed] = (self.env._idx_wp[ids_gate_passed] + 1) % num_gates
         self.env._n_gates_passed[ids_gate_passed] += 1
@@ -1025,18 +1097,62 @@ class CircleQuadcopterStrategy:
                 self.env._robot.data.root_link_pos_w[ids_gate_passed]
             )
             self.env._prev_x_drone_wrt_gate[ids_gate_passed] = new_pose[:, 0]
+            # Reset approach buffer to the new gate's frame x at transition
+            # moment — next step's max() starts fresh for the new target.
+            self._max_x_since_gate_change[ids_gate_passed] = new_pose[:, 0]
         gate_pass = gate_passed.float()
         if len(ids_gate_passed) > 0:
             self._steps_since_gate_pass[ids_gate_passed] = 0
             self._record_gate_pass_replay(ids_gate_passed)
 
-        # --- Lap time tracking ---
+        # --- Previous-gate backtrack detection (Fix B, 2026-04-18c) ---
+        # After passing gate N, the drone must not reverse-cross N's plane to
+        # re-reach the +x side. Guards against the Gate 2 re-cross exploit
+        # observed on powerloop. idx_wp is already post-incremented, so
+        # prev_gate_idx = idx_wp - 1 always points at the most-recently passed
+        # gate for envs with n_gates_passed > 0.
+        prev_gate_idx = (self.env._idx_wp - 1) % num_gates
+        pose_wrt_prev, _ = subtract_frame_transforms(
+            self.env._waypoints[prev_gate_idx, :3],
+            self.env._waypoints_quat[prev_gate_idx, :],
+            self.env._robot.data.root_link_pos_w,
+        )
+        curr_x_wrt_prev = pose_wrt_prev[:, 0]
+        prev_within_bounds = (
+            (pose_wrt_prev[:, 1].abs() < gate_half_side)
+            & (pose_wrt_prev[:, 2].abs() < gate_half_side)
+        )
+        # Exclude envs that just passed a gate this step: their prev_gate
+        # changed, so the buffer (in old prev_gate frame) vs curr (in new
+        # prev_gate frame) comparison is meaningless for one step.
+        backtrack_crossed = (
+            (self._prev_x_drone_wrt_prev_gate < 0.0)
+            & (curr_x_wrt_prev >= 0.0)
+            & prev_within_bounds
+            & (self.env._n_gates_passed > 0)
+            & ~gate_passed
+        )
+        backtrack_ids = torch.where(backtrack_crossed)[0]
+        if self._backtrack_check_enabled and len(backtrack_ids) > 0:
+            self.env._crashed[backtrack_ids] = 200
+        # Update buffer in the current prev_gate frame. For envs that just
+        # passed, curr_x_wrt_prev is already computed against the new (=just
+        # passed) prev_gate, which equals the pre-pass curr_x — the override
+        # below keeps the semantics explicit.
+        self._prev_x_drone_wrt_prev_gate = curr_x_wrt_prev.clone()
+        if len(ids_gate_passed) > 0:
+            self._prev_x_drone_wrt_prev_gate[ids_gate_passed] = curr_x[ids_gate_passed]
+
+        # --- Lap time tracking + optional lap bonus ---
+        lap_bonus = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        reward_cfg = getattr(self.env, "rew", {})
         if len(ids_gate_passed) > 0:
             dt = self.cfg.sim.dt * self.cfg.decimation
             gates_passed_count = self.env._n_gates_passed[ids_gate_passed]
             lap_complete_mask = (gates_passed_count > 0) & (gates_passed_count % num_gates == 0)
             lap_complete_ids = ids_gate_passed[lap_complete_mask]
             if len(lap_complete_ids) > 0:
+                lap_bonus[lap_complete_ids] = 100.0 * float(reward_cfg.get("lap_complete_reward_scale", 0.0))
                 current_step = self.env.episode_length_buf[lap_complete_ids]
                 lap_steps = current_step - self._lap_start_step[lap_complete_ids]
                 lap_seconds = lap_steps.float() * dt
@@ -1058,6 +1174,8 @@ class CircleQuadcopterStrategy:
         current_distance = torch.linalg.norm(
             self.env._desired_pos_w - self.env._robot.data.root_link_pos_w, dim=1
         )
+        # Progress is optional for R1, but the tensor must always exist during training.
+        progress = (self.env._last_distance_to_goal - current_distance).clamp(-1.0, 1.0)
         self.env._last_distance_to_goal = current_distance.clone()
 
         if self.cfg.is_train:
@@ -1070,19 +1188,33 @@ class CircleQuadcopterStrategy:
             cmd_smoothness = delta_action * self.env.rew['cmd_smoothness_scale']
             self._prev_actions = self.env._actions.clone()
 
+            progress_scale = float(self.env.rew.get('progress_goal_reward_scale', 0.0))
+            r_progress = progress * progress_scale
+            # Zero out dense progress on configured gate indices (e.g. powerloop's
+            # loop gate) so the policy can't exploit Euclidean-distance shrinkage
+            # by poking through from the wrong side. Baseline keeps this empty.
+            skip_idx = self.env.rew.get('progress_skip_gate_indices', None)
+            if progress_scale != 0.0 and skip_idx:
+                skip_tensor = torch.as_tensor(list(skip_idx), device=self.device,
+                                              dtype=self.env._idx_wp.dtype)
+                loop_mask = (self.env._idx_wp.unsqueeze(-1) == skip_tensor).any(dim=-1)
+                r_progress = torch.where(loop_mask, torch.zeros_like(r_progress), r_progress)
             r_gate = gate_pass * self.env.rew['gate_pass_reward_scale']
             r_lap_incomplete = self.env.rew['lap_incomplete_penalty_scale']  # constant per-step cost
             r_crash = contact_penalty * self.env.rew['crash_contact_scale']
 
-            reward = r_gate + r_lap_incomplete + cmd_reg + cmd_smoothness + r_crash
+            reward = r_progress + r_gate + lap_bonus + r_lap_incomplete + cmd_reg + cmd_smoothness + r_crash
 
             # Death cost override on terminal episodes
             reward = torch.where(self.env.reset_terminated,
                                  torch.ones_like(reward) * self.env.rew['death_cost'], reward)
 
+            self._episode_sums["progress_goal"] += r_progress
             self._episode_sums["gate_pass"] += r_gate
+            self._episode_sums["lap_complete"] += lap_bonus
             self._episode_sums["lap_incomplete"] += r_lap_incomplete
             self._episode_sums["cmd_reg"] += cmd_reg
+            self._episode_sums["cmd_smoothness"] += cmd_smoothness
             self._episode_sums["crash"] += r_crash
         else:
             reward = torch.zeros(self.num_envs, device=self.device)
@@ -1393,12 +1525,16 @@ class CircleQuadcopterStrategy:
         self._prev_obs_valid[env_ids] = False
         if self.cfg.is_train:
             effective_replay_mask = replay_mask & (~ground_mask)
-            spline_mask = (~replay_mask) & (~ground_mask)
+            fallback_mask = (~replay_mask) & (~ground_mask)
+            spline_mask = fallback_mask if use_spline else torch.zeros_like(fallback_mask)
+            linear_mask = fallback_mask if (not use_spline) else torch.zeros_like(fallback_mask)
             self.env.extras.setdefault("log", {})
             self.env.extras["log"]["Reset/replay_ratio"] = effective_replay_mask.float().mean().item()
             self.env.extras["log"]["Reset/ground_ratio"] = ground_mask.float().mean().item()
+            self.env.extras["log"]["Reset/linear_ratio"] = linear_mask.float().mean().item()
             self.env.extras["log"]["Reset/spline_ratio"] = spline_mask.float().mean().item()
             self.env.extras["log"]["Reset/use_spline"] = float(use_spline)
+            self.env.extras["log"]["Reset/replay_ratio_cfg"] = self._get_effective_replay_ratio()
 
         self.env._robot.write_root_link_pose_to_sim(default_root_state[:, :7], env_ids)
         self.env._robot.write_root_com_velocity_to_sim(default_root_state[:, 7:], env_ids)
@@ -1416,4 +1552,11 @@ class CircleQuadcopterStrategy:
         )
 
         self.env._prev_x_drone_wrt_gate[env_ids] = 1.0
+        # Reset approach buffer to actual spawn x in current gate frame so the
+        # approach gating reflects the real post-reset geometry (replay resets
+        # can spawn on either side of the gate plane).
+        self._max_x_since_gate_change[env_ids] = self.env._pose_drone_wrt_gate[env_ids, 0]
+        # Backtrack buffer: safe value — the `n_gates_passed > 0` guard in
+        # get_rewards() prevents false positives before the first pass.
+        self._prev_x_drone_wrt_prev_gate[env_ids] = 0.0
         self.env._crashed[env_ids] = 0

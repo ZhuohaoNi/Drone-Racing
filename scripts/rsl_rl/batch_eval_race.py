@@ -593,12 +593,22 @@ def main():
         args_cli.task, device=args_cli.device,
         num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric,
     )
+    if "ENV_OVERRIDES" in os.environ:
+        try:
+            env_overrides = json.loads(os.environ["ENV_OVERRIDES"])
+            for k, v in env_overrides.items():
+                setattr(env_cfg, k, v)
+            print(f"[INFO] Applied ENV_OVERRIDES: {env_overrides}")
+        except Exception as e:
+            print(f"[Warning] Failed to parse ENV_OVERRIDES: {e}")
     # is_train=True keeps DR hooks alive so we can write into the physics tensors
     env_cfg.is_train = True
     env_cfg.seed = args_cli.seed
     # env requires rewards in cfg when is_train=True — set directly on cfg (same as eval_race.py)
     env_cfg.rewards = {
         'gate_pass_reward_scale':        0.0,
+        'progress_goal_reward_scale':    0.0,
+        'lap_complete_reward_scale':     0.0,
         'death_cost':                    0.0,
         'lap_incomplete_penalty_scale':  0.0,
         'cmd_reg_rp_scale':              0.0,

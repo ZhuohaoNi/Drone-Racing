@@ -4,6 +4,247 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Previous-Gate Backtrack Detection] - 2026-04-18c
+
+### Purpose
+
+After Fix A (approach-zone gating) cleaned up the Gate-3 micro-U-turn, a new
+exploit surfaced: on the powerloop track the drone would pass Gate 2 cleanly,
+then reverse back through Gate 2 (re-cross its plane into the +x approach
+zone), and proceed to Gate 3. Gates 2 and 3 sit on the same gate structure
+with the same yaw, so re-entering Gate 2 backwards is a cheap way to
+"restart" the approach toward Gate 3 without taking a proper detour.
+
+The existing `wrong_side_crossed` check only monitors the **current target**
+gate. Once Gate 2 was passed and the target advanced to Gate 3, nothing in
+the reward function cared about Gate 2's plane any longer.
+
+### Fix
+
+Added a generic previous-gate backtrack detector. Every step, the drone's x
+is computed in the frame of `prev_gate_idx = (idx_wp - 1) % num_gates`. If
+the drone crosses that plane from `-x` to `+x` while inside the gate's y/z
+bounds, the episode is killed (`_crashed = 200`, same treatment as
+`wrong_side_crossed`).
+
+Guards:
+
+- Skipped while `n_gates_passed == 0` — at spawn, prev_gate is spurious.
+- Skipped on the step a gate is passed (prev_gate just changed; comparing
+  last step's x in the old prev_gate frame against this step's x in the new
+  prev_gate frame is meaningless).
+- Inside y/z gate bounds only, so flying around the outside of a passed gate
+  never triggers.
+
+### Code changes
+
+- `CircleQuadcopterStrategy.__init__`: added `_prev_x_drone_wrt_prev_gate`
+  buffer.
+- `CircleQuadcopterStrategy.get_rewards`: computes drone pose wrt prev gate
+  via `subtract_frame_transforms`, flags backtrack crossings, updates buffer
+  each step with a seed override on the just-passed-gate transition.
+- `CircleQuadcopterStrategy.reset_idx`: zero-initialized; the
+  `n_gates_passed > 0` guard prevents false positives until the first pass.
+
+Transfer risk: zero. Training-only termination; `play_race.py` / `eval_race.py`
+do not run through `get_rewards`.
+
+---
+
+## [Approach-Zone Gate-Pass Gating] - 2026-04-18b
+
+### Purpose
+
+Even after the Gate-3 progress mask, the policy was still exhibiting a
+"quick-pass-and-come-back-out" at Gate 3 — a micro-U-turn at the gate plane
+that briefly puts `prev_x > 0`, then immediately crosses back to `curr_x <= 0`
+to fire gate_pass for the +200 reward. This is not a real powerloop nor a
+real side detour; it exploits the fact that the existing detector only
+requires a single 20 ms step of being on the +x approach side.
+
+The project description explicitly defines Gate 3's semantics as
+"entering the right opening of the same structure from the same side
+(forward/away from camera) as it did for Gate 2" — the policy's micro-
+U-turn does not satisfy this.
+
+### Fix
+
+Added an approach-zone gate to `gate_passed`: the drone must have reached
+`x_wrt_gate >= approach_x_threshold` (default 0.3 m, gate_half_side=0.35)
+at some point since the current target gate was activated. A per-env
+`_max_x_since_gate_change` buffer tracks this and is reset on:
+
+- Episode reset (initialized from actual post-reset `_pose_drone_wrt_gate[:, 0]`
+  so replay resets that land on either side of a gate are handled correctly)
+- Gate-pass transition (initialized from drone's x in the new gate's frame)
+
+After the gate, the next step's running `max()` takes over.
+
+All legal passes (direct approach, side detour, classic powerloop) reach
+`max_x` values well above 0.3 m by geometry, so the threshold has ample
+margin. The micro-U-turn at the gate plane cannot reach it.
+
+### Code changes
+
+- `CircleQuadcopterStrategy.__init__`: added `_max_x_since_gate_change`
+  buffer and `_approach_x_threshold` config field.
+- `CircleQuadcopterStrategy.get_rewards`: update buffer each step, add
+  `approach_valid` condition to `gate_passed`, reset buffer on gate pass
+  using the new-frame x from `subtract_frame_transforms`.
+- `CircleQuadcopterStrategy.reset_idx`: initialize buffer from the
+  post-reset `_pose_drone_wrt_gate[:, 0]`.
+
+Transfer risk: zero. Detector is training-only; `play_race.py` /
+`eval_race.py` don't run through `get_rewards`.
+
+---
+
+## [Powerloop R1+D1 + Gate-3 Progress Mask] - 2026-04-18
+
+### Purpose
+
+R1+D1 (dense gate-progress reward + staged replay/DR) produced unclean Gate-3
+behavior on the powerloop track: small poke from the exit side of the gate
+plane, then a bounce back to cross correctly, or loitering near the plane.
+Side-detour behavior from the 2026-04-16 fixed baseline was lost.
+
+### Root cause
+
+`progress_goal` uses 3D Euclidean distance to the gate center
+(`quadcopter_strategies.py:1100-1105`). For the powerloop loop gate (idx_wp=3),
+the correct trajectory — whether over-the-top or side-detour — **must first
+increase distance** before re-entering from the correct side. The dense
+progress reward instead pulls the policy toward distance-minimizing shortcuts,
+which only remain legal by poking close to the plane from the wrong side (the
+wrong-side crash only fires inside the tight y/z gate bounds, so grazing the
+plane just outside the opening costs nothing).
+
+### Fix
+
+Added optional `progress_skip_gate_indices` reward config. When set, dense
+progress is zeroed on those gate indices; `gate_pass`, `lap_incomplete`,
+`cmd_reg`, `cmd_smoothness`, `crash`, and `death_cost` all continue to apply.
+For powerloop training this is set to `[3]`.
+
+Effect per gate:
+- Non-loop gates (0,1,2,4,5,6): R1 progress intact — retains the speed benefit
+- Gate 3: signal reduces to the 2026-04-16 baseline (pure sparse) — side-detour
+  is the learned optimum, as already demonstrated by that baseline
+
+Transfer impact: zero. Obs/action/network unchanged; the masked training signal
+on Gate 3 is identical to the already-deployed baseline for that gate.
+
+### Code changes
+
+- `CircleQuadcopterStrategy.get_rewards()`: read
+  `progress_skip_gate_indices` from the reward dict and mask `r_progress`
+  per-env by `_idx_wp`. Default behavior (empty list) unchanged.
+- New canonical training script `scripts/run/train_powerloop.sh`
+  (replaces ad-hoc `train_powerloop_r1d1.sh`) with
+  `progress_skip_gate_indices=[3]` baked into `REWARD_OVERRIDES`.
+
+### Training command
+
+```bash
+cd /home/peterni/Documents/ese6510/ese651_project
+./scripts/run/train_powerloop.sh 5000 8192
+```
+
+---
+
+## [Powerloop R1 / D1 / R1+D1 Sequence] - 2026-04-17
+
+### Purpose
+
+Prepare the next three **single-agent powerloop** candidates for real testing without disturbing the fixed post-fix baseline.
+
+- `R1`: reward-only fast candidate
+- `D1`: reset/DR-only robust candidate
+- `R1+D1`: combined candidate
+
+This sequence is intentionally aligned with the strongest **real-world single-agent racing** ideas from:
+
+- Song et al. 2021 / 2023: dense gate-progress reward plus successful-state replay resets
+- Kaufmann et al. 2023 (Swift): controller-aligned observation, previous-action input, smooth-action regularization, real-driven sim2real refinement
+- Ferede et al. 2025: moderate domain randomization improves transfer, but excessive DR costs speed
+
+### Code changes
+
+- Added optional `progress_goal_reward_scale` and `lap_complete_reward_scale` to the current `CircleQuadcopterStrategy`.
+- Added configurable replay-reset and dynamics-DR knobs to the environment config so experiments can change reset/DR without forking the strategy.
+- Added optional **staged replay reset**:
+  replay can start at zero early in training and ramp to the configured ratio later, similar in spirit to Song-style reset buffers.
+- Rewrote `train_overnight.sh` to run a sequential **powerloop** experiment triplet instead of the old circle smoothness ablations.
+
+### Experiment definitions
+
+#### `R1` — reward-only
+
+Goal: increase speed with the least invasive change to the current baseline reward.
+
+- Keep the current sparse/event-based baseline intact
+- Add a **dense gate-progress term**:
+  `progress_goal_reward_scale = 20.0`
+- Add a small **lap completion bonus**:
+  `lap_complete_reward_scale = 0.5` which maps to `+50` on lap completion
+- Keep:
+  `gate_pass_reward_scale = 200.0`
+  `lap_incomplete_penalty_scale = -0.05`
+  `cmd_reg_rp/yaw`
+  `cmd_smoothness = -0.1`
+  `use_spline_reset = False`
+
+Rationale:
+- Matches the successful single-agent real-racing pattern from Song 2023 more closely than the pure sparse baseline
+- Still keeps gate-pass events dominant, avoiding a full return to raceline-heavy dense shaping
+
+#### `D1` — reset + DR only
+
+Goal: improve real-world robustness without changing the reward.
+
+- Reward remains the fixed sparse baseline
+- Track switches to `powerloop`
+- Enable **staged replay reset**:
+  - `replay_reset_ratio = 0.25`
+  - `ground_reset_ratio = 0.10`
+  - `staged_replay_reset = True`
+  - `replay_warmup_iterations = 500`
+  - `replay_full_iterations = 2000`
+- Use **moderate DR** instead of the current wider baseline DR:
+  - `twr_randomization_pct = 0.10`
+  - `aero_randomization_scale_min/max = 0.5 / 2.0`
+  - `pid_kpki_randomization_pct = 0.15`
+  - `pid_kd_randomization_pct = 0.30`
+- Keep:
+  - `action_latency_max = 2`
+  - `obs_latency_prob = 0.0`
+  - `mass_variation = 0.0`
+  - `motor_tau_scale_min/max = 1.0 / 1.0`
+  - `use_spline_reset = False`
+
+Rationale:
+- Replay warmup is closer to Song 2021 / 2023 than immediately replaying high-probability cached states from iteration 0
+- Moderate DR follows the real-world trend from Ferede 2025 that robustness improves before large DR begins to slow the controller down
+
+#### `R1+D1` — combined
+
+Combines the `R1` reward changes with the `D1` reset/DR changes for the final candidate in the overnight sequence.
+
+### Training command
+
+Run the sequence with:
+
+```bash
+cd /home/peterni/Documents/ese6510/ese651_project
+./scripts/run/train_overnight.sh 5000 8192
+```
+
+This now launches, in order:
+
+1. `powerloop-r1-gateprogress`
+2. `powerloop-d1-stagedreset-dr`
+3. `powerloop-r1d1-gateprogress-stagedreset`
+
 ## [Fixed Sim2Real Baseline] - 2026-04-16
 
 ### Purpose
@@ -50,6 +291,18 @@ This is the **recommended launch baseline** for the next round of testing. It is
 ### Next experiment
 
 The next planned experiment is the **powerloop track**, using this same fixed baseline as the starting point. Only the track/task-specific logic should change first; reward, reset, and DR should stay frozen until the first post-fix powerloop result is in.
+
+Todo after the first clean post-fix powerloop runs:
+- Add a **minimal powerloop-guide ablation (`G1`)** on top of the clean baseline or `D1`, not on top of the old dense powerloop stack.
+- `G1` should restore only the geometric guide pieces that were likely genuinely useful:
+  - Gate 2 `apex` redirect
+  - Gate 3 `2-phase` guide: `apex -> offset_center`
+- `G1` should explicitly *not* restore the older high-risk pieces:
+  - `pre_entry`
+  - `vel_toward_gate`
+  - heading reward
+  - old monolithic `DefaultQuadcopterStrategy` powerloop stack
+- Preferred first comparison: `baseline`, `D1`, and then `G1` or `G1+D1` as the next task-specific candidate.
 
 ## [Real-World Evaluation Summary — All Versions] - 2026-04-16 (v3 strict-order lap timer)
 

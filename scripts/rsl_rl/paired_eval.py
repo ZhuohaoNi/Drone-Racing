@@ -441,9 +441,17 @@ def main():
     env_cfg.is_train = True
     env_cfg.seed = args_cli.seed
     env_cfg.rewards = {k: 0.0 for k in [
-        'progress_goal_reward_scale', 'gate_pass_reward_scale',
-        'vel_toward_gate_reward_scale', 'orientation_reward_scale',
-        'smoothness_reward_scale', 'crash_reward_scale', 'death_cost']}
+        'gate_pass_reward_scale',
+        'progress_goal_reward_scale',
+        'lap_complete_reward_scale',
+        'death_cost',
+        'lap_incomplete_penalty_scale',
+        'cmd_reg_rp_scale',
+        'cmd_reg_yaw_scale',
+        'crash_reward_scale',
+        'crash_contact_scale',
+        'cmd_smoothness_scale',
+    ]}
 
     env = gym.make(args_cli.task, cfg=env_cfg, rewards=env_cfg.rewards)
     if isinstance(env.unwrapped, DirectMARLEnv):

@@ -137,6 +137,16 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     use_spline_reset = False        # fixed baseline: rely on replay + ground + linear interp resets
     spline_vel_min = 0.5            # only used when use_spline_reset=True
     spline_vel_max = 1.5
+    replay_reset_ratio = 0.3        # baseline cache replay ratio; D1 can stage this in over training
+    ground_reset_ratio = 0.2        # baseline ground-start coverage
+    staged_replay_reset = False     # baseline keeps replay always-on; D1 enables Song-style warmup
+    replay_warmup_iterations = 0    # when staged, replay ratio is 0 before this iteration
+    replay_full_iterations = 0      # when staged, replay reaches full ratio at this iteration
+    twr_randomization_pct = 0.15    # baseline preserves current wide TWR DR
+    aero_randomization_scale_min = 0.2
+    aero_randomization_scale_max = 3.0
+    pid_kpki_randomization_pct = 0.35
+    pid_kd_randomization_pct = 0.5
 
     # env
     episode_length_s = 30.0             # episode_length = episode_length_s / dt / decimation
