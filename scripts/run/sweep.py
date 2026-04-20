@@ -18,7 +18,10 @@ import sys
 import os
 import argparse
 import json
+import csv
 from itertools import product
+from datetime import datetime
+from pathlib import Path
 
 # ---------- Default reward scales (Fixed sim2real baseline) ----------
 REWARD_DEFAULTS = {
@@ -143,6 +146,66 @@ def generate_train_script(config_name, merged_rewards, merged_ppo, merged_env, m
     return "\n".join(lines)
 
 
+def _list_run_dirs(log_root: Path) -> dict[str, float]:
+    if not log_root.exists():
+        return {}
+    return {
+        p.name: p.stat().st_mtime
+        for p in log_root.iterdir()
+        if p.is_dir()
+    }
+
+
+def _detect_new_run_dir(before: dict[str, float], after: dict[str, float]) -> str | None:
+    new_names = [name for name in after.keys() if name not in before]
+    if new_names:
+        return max(new_names, key=lambda name: after[name])
+    changed = [name for name in after.keys() if before.get(name) != after.get(name)]
+    if changed:
+        return max(changed, key=lambda name: after[name])
+    return None
+
+
+def _write_sweep_summary(rows: list[dict], out_dir: Path) -> tuple[Path, Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "sweep_summary.csv"
+    md_path = out_dir / "sweep_summary.md"
+
+    fieldnames = [
+        "config_index",
+        "config_name",
+        "status",
+        "return_code",
+        "run_dir",
+        "max_iterations",
+        "num_envs",
+        "reward_overrides",
+        "ppo_overrides",
+        "env_overrides",
+    ]
+
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+    lines = [
+        "# Sweep Summary",
+        "",
+        "| Idx | Config | Status | Return | Run Dir | Iter | Envs |",
+        "|---:|---|---|---:|---|---:|---:|",
+    ]
+    for row in rows:
+        lines.append(
+            f"| {row['config_index']} | `{row['config_name']}` | {row['status']} | "
+            f"{row['return_code']} | `{row['run_dir'] or ''}` | {row['max_iterations']} | {row['num_envs']} |"
+        )
+
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return csv_path, md_path
+
+
 def main():
     parser = argparse.ArgumentParser(description="Hyperparameter sweep for drone racing")
     parser.add_argument("--config", type=int, nargs="*", default=None,
@@ -197,6 +260,11 @@ def main():
     print(f"  Iterations: {args.max_iterations} | Envs: {args.num_envs}")
     print(f"{'='*60}\n")
 
+    sweep_rows = []
+    logs_root = Path("logs") / "rsl_rl" / "quadcopter_direct"
+    summary_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    summary_dir = logs_root / f"sweep_summary_{summary_stamp}"
+
     for i in indices:
         if i >= len(configs):
             print(f"[WARN] Config index {i} out of range (max {len(configs)-1}), skipping")
@@ -226,6 +294,18 @@ def main():
         if args.dry_run:
             print(generate_train_script(config_name, merged_rewards, merged_ppo, merged_env, args.max_iterations, args.num_envs))
             print()
+            sweep_rows.append({
+                "config_index": i,
+                "config_name": config_name,
+                "status": "dry_run",
+                "return_code": 0,
+                "run_dir": "",
+                "max_iterations": args.max_iterations,
+                "num_envs": args.num_envs,
+                "reward_overrides": json.dumps(merged_rewards, sort_keys=True),
+                "ppo_overrides": json.dumps(merged_ppo, sort_keys=True),
+                "env_overrides": json.dumps(merged_env, sort_keys=True),
+            })
             continue
 
         run_env = os.environ.copy()
@@ -239,12 +319,32 @@ def main():
         print(f"[RUN] {' '.join(cmd)}")
         print(f"[RUN] REWARD/PPO/ENV_OVERRIDES set in environment\n")
 
+        before_dirs = _list_run_dirs(logs_root)
         result = subprocess.run(cmd, env=run_env)
+        after_dirs = _list_run_dirs(logs_root)
+        run_dir = _detect_new_run_dir(before_dirs, after_dirs)
+        status = "ok" if result.returncode == 0 else "failed"
+        sweep_rows.append({
+            "config_index": i,
+            "config_name": config_name,
+            "status": status,
+            "return_code": result.returncode,
+            "run_dir": run_dir or "",
+            "max_iterations": args.max_iterations,
+            "num_envs": args.num_envs,
+            "reward_overrides": json.dumps(merged_rewards, sort_keys=True),
+            "ppo_overrides": json.dumps(merged_ppo, sort_keys=True),
+            "env_overrides": json.dumps(merged_env, sort_keys=True),
+        })
         if result.returncode != 0:
             print(f"[WARN] Config {config_name} exited with code {result.returncode}")
         print(f"\n{'='*60}\n")
 
+    csv_path, md_path = _write_sweep_summary(sweep_rows, summary_dir)
+
     print("Sweep complete.")
+    print(f"Summary CSV: {csv_path}")
+    print(f"Summary MD:  {md_path}")
 
 
 if __name__ == "__main__":

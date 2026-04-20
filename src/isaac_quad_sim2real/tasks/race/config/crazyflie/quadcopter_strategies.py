@@ -1061,7 +1061,11 @@ class CircleQuadcopterStrategy:
         """Sparse baseline reward with optional R1 gate-progress and lap bonus."""
         num_gates = self.env._waypoints.shape[0]
         gate_side = self.cfg.gate_model.gate_side
-        gate_half_side = gate_side / 2.0
+        # Circle policies are commonly judged visually against the physical 1.0 m
+        # gate opening, so keep circle pass detection aligned with the visible
+        # gate. Powerloop continues to use the virtual inner opening.
+        pass_gate_side = 1.0 if self.cfg.track_name == "circle" else gate_side
+        gate_half_side = pass_gate_side / 2.0
         dist_to_gate = torch.linalg.norm(self.env._pose_drone_wrt_gate, dim=1)
         curr_x = self.env._pose_drone_wrt_gate[:, 0]
         prev_x = self.env._prev_x_drone_wrt_gate
@@ -1070,13 +1074,18 @@ class CircleQuadcopterStrategy:
         within_bounds = (gate_y.abs() < gate_half_side) & (gate_z.abs() < gate_half_side)
         crossed_plane = (prev_x > 0.0) & (curr_x <= 0.0)
 
-        # Approach-zone gate: drone must have reached the +x approach side at
-        # depth >= threshold at some point since this gate became the target.
-        # Catches the Gate-3 micro-U-turn exploit (see changelog 2026-04-18b).
+        # Approach-zone gate: only enforce Fix A on powerloop Gate 3. Applying
+        # this globally makes circle visual evals under-count visibly valid
+        # passes, which is not what we want for checkpoint sanity checks.
         self._max_x_since_gate_change = torch.maximum(
             self._max_x_since_gate_change, curr_x
         )
-        approach_valid = self._max_x_since_gate_change > self._approach_x_threshold
+        approach_valid = torch.ones_like(curr_x, dtype=torch.bool)
+        if self.cfg.track_name == "powerloop":
+            gate3_mask = self.env._idx_wp == 3
+            approach_valid[gate3_mask] = (
+                self._max_x_since_gate_change[gate3_mask] > self._approach_x_threshold
+            )
 
         # Use the original default/Vineet-style pass detector so old checkpoints are
         # evaluated against the same semantics they were effectively trained with.

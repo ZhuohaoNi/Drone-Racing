@@ -41,7 +41,7 @@ cd "$(dirname "$0")/../.."
 export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
 
 if [[ -z "${ENV_OVERRIDES:-}" ]]; then
-    ENV_OVERRIDES='{"track_name":"powerloop"}'
+    ENV_OVERRIDES='{"track_name":"circle"}'
 fi
 export ENV_OVERRIDES
 

@@ -245,6 +245,80 @@ def write_summary_files(rows: list[dict], output_root: Path) -> tuple[Path, Path
     return csv_path, json_path
 
 
+def _fmt_pct(value) -> str:
+    return "N/A" if value is None else f"{float(value):.1f}"
+
+
+def _fmt_time(value) -> str:
+    return "N/A" if value is None else f"{float(value):.2f}"
+
+
+def write_markdown_summary(rows: list[dict], output_root: Path, run_dir: Path, checkpoint: str) -> Path:
+    md_path = output_root / "robustness_sweep_summary.md"
+
+    nominal_row = next((row for row in rows if row["scenario"] == "control_nominal"), None)
+    nominal_sr = nominal_row.get("three_lap_success_pct") if nominal_row else None
+    nominal_time = nominal_row.get("mean_3lap_time") if nominal_row else None
+    use_delta_cols = nominal_sr not in (None, 0, 0.0)
+
+    lines = [
+        "# Robustness Sweep Summary",
+        "",
+        f"- Run: `{run_dir.name}`",
+        f"- Checkpoint: `{checkpoint}`",
+        f"- Output dir: `{output_root}`",
+        f"- Scenarios: `{len(rows)}`",
+        "",
+    ]
+
+    if nominal_row is None:
+        lines += [
+            "No `control_nominal` row found, so nominal-reference deltas were omitted.",
+            "",
+        ]
+    elif not use_delta_cols:
+        lines += [
+            f"Nominal 3-lap success is `{_fmt_pct(nominal_sr)}%`, so delta-vs-nominal columns are omitted.",
+            "",
+        ]
+    else:
+        lines += [
+            f"Nominal reference: `control_nominal`, 3-lap success `{_fmt_pct(nominal_sr)}%`, "
+            f"mean successful 3-lap time `{_fmt_time(nominal_time)}s`.",
+            "",
+        ]
+
+    if use_delta_cols:
+        lines.append("| Scenario | Group | Takeoff (%) | First Gate (%) | 3-lap SR (%) | Mean 3-lap (s) | Delta SR vs nominal | Delta time vs nominal (s) |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+    else:
+        lines.append("| Scenario | Group | Takeoff (%) | First Gate (%) | 3-lap SR (%) | Mean 3-lap (s) | Best 3-lap (s) | Worst 3-lap (s) |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+
+    for row in rows:
+        takeoff = _fmt_pct(row.get("ground_takeoff_success_pct"))
+        first_gate = _fmt_pct(row.get("ground_first_gate_success_pct"))
+        three_lap = _fmt_pct(row.get("three_lap_success_pct"))
+        mean_time = _fmt_time(row.get("mean_3lap_time"))
+        if use_delta_cols:
+            sr = row.get("three_lap_success_pct")
+            mt = row.get("mean_3lap_time")
+            delta_sr = "N/A" if sr is None else f"{float(sr) - float(nominal_sr):+.1f}"
+            delta_time = "N/A" if (mt is None or nominal_time is None) else f"{float(mt) - float(nominal_time):+.2f}"
+            lines.append(
+                f"| `{row['scenario']}` | {row['group']} | {takeoff} | {first_gate} | {three_lap} | {mean_time} | {delta_sr} | {delta_time} |"
+            )
+        else:
+            best_time = _fmt_time(row.get("best_3lap_time"))
+            worst_time = _fmt_time(row.get("worst_3lap_time"))
+            lines.append(
+                f"| `{row['scenario']}` | {row['group']} | {takeoff} | {first_gate} | {three_lap} | {mean_time} | {best_time} | {worst_time} |"
+            )
+
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return md_path
+
+
 def print_scenarios() -> None:
     print("Common overrides:")
     print(json.dumps(COMMON_SWEEP_OVERRIDES, indent=2, sort_keys=True))
@@ -335,6 +409,7 @@ def main() -> None:
         return
 
     csv_path, json_path = write_summary_files(rows, output_root)
+    md_path = write_markdown_summary(rows, output_root, run_dir, args.checkpoint)
 
     print()
     print("=" * 72)
@@ -355,6 +430,7 @@ def main() -> None:
         )
     print(f"CSV:  {csv_path}")
     print(f"JSON: {json_path}")
+    print(f"MD:   {md_path}")
     print("=" * 72)
 
 
