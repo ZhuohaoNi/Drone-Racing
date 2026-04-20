@@ -945,7 +945,7 @@ V2 achieved 99.9% SR in sim with 3-param DR eval, but training curves showed lar
 | Mean / max body rate | 154.59 / 235.07 rad/s |
 | Mean / max thrust | 0.71 / 1.17 N |
 
-**Interpretation:** Most laps completed in a single run (16). Very consistent (std 0.020 s). Higher body rate than V2 (155 vs 127 rad/s) — tighter DR didn't help smoothness in real. Slightly slower than V2 (mean 2.435 vs 2.697 s... wait, actually faster). Fastest 3-lap window 7.273 s is the best of V2/V3.
+**Interpretation:** Most laps completed in a single run (16). Very consistent (std 0.020 s). Higher body rate than V2 (155 vs 127 rad/s) — tighter DR didn't help smoothness in real. Slightly faster than V2 (mean 2.435 vs 2.697 s). Fastest 3-lap window 7.273 s is the best of V2/V3.
 
 ---
 

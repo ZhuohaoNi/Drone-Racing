@@ -18,3 +18,6 @@
 **/runs/*
 **/logs/*
 **/recordings/*
+
+rosbags/plots_full/*
+rosbags_04_15/plots_full/*
