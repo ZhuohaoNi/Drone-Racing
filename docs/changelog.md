@@ -4,6 +4,79 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Powerloop Split Gate Semantics: Full Switch, Virtual Reward, Gate-3-Only Approach Gate] - 2026-04-20
+
+### Purpose
+
+The previous setup mixed two different goals into one gate detector:
+
+- runtime target switching / lap counting
+- conservative center-through shaping
+
+This caused two problems:
+
+- `circle` visual evals could under-count visibly valid passes
+- shrinking the gate for conservative shaping also shrank the target-switch
+  semantics, which is not what we want for the next powerloop real-transfer
+  experiment
+
+### New semantics
+
+Training-side gate logic is now split into three parts:
+
+1. `target switch` / `lap counting`: use the **full physical gate**
+   (`1.0 m`)
+2. `gate_pass` reward / replay shaping: use the **virtual inner gate**
+   (`gate_side = 0.7`)
+3. `approach-zone` Fix A: keep it enabled **only for `powerloop` Gate 3**
+
+This gives the policy a clear incentive to fly conservatively through the
+center while avoiding the bad side effect of "physically passed, but target did
+not switch".
+
+### Implementation
+
+In `CircleQuadcopterStrategy.get_rewards()`:
+
+- `within_switch_bounds` uses a fixed physical half-side of `0.5`
+- `within_reward_bounds` uses `gate_side / 2`
+- `gate_switched` drives:
+  - `idx_wp`
+  - `n_gates_passed`
+  - `desired_pos_w`
+  - lap completion logic
+- `gate_rewarded` drives:
+  - `gate_pass` reward
+  - replay buffer insertion
+- `approach_valid` remains active only when:
+  - `track_name == "powerloop"`
+  - `idx_wp == 3`
+
+### Why this is the next version
+
+This is the cleanest way to separate:
+
+- **runtime correctness**: the system should recognize a physically valid pass
+- **training conservatism**: the policy should still prefer a safer inner line
+
+It also preserves the existing Gate-3 anti-exploit logic without reapplying it
+to `circle`.
+
+### Training command
+
+Use the canonical powerloop script:
+
+```bash
+cd /home/peterni/Documents/ese6510/ese651_project
+./scripts/run/train_powerloop.sh 3000 8192
+```
+
+This now trains the split-semantics version and writes a new run name:
+
+- `powerloop-r1d1-gate3mask-fullswitch`
+
+---
+
 ## [Powerloop Robustness Sweep: Observation Bias vs Control Mismatch] - 2026-04-19
 
 ### Purpose

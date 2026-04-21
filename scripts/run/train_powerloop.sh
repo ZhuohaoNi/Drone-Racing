@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Canonical powerloop training script (R1+D1 base + Gate-3 progress mask).
+# Canonical powerloop training script
+# (R1+D1 base + Gate-3 progress mask + split gate semantics).
 #
 # Based on R1+D1 from 2026-04-17 changelog:
 #   R1: dense gate-progress (+20) + lap-complete bonus (+50)
@@ -8,6 +9,10 @@
 # Plus Fix 2 (2026-04-18): disable dense progress on powerloop loop gate
 #   (idx_wp == 3) to prevent the "poke from wrong side" exploit at Gate 3.
 #   Side-detour behavior (as in 2026-04-16 fixed baseline) is preserved.
+# Plus Fix 3 (2026-04-20): split gate semantics
+#   - target switch / lap counting uses the physical gate (1.0m)
+#   - gate_pass reward / replay shaping uses the virtual inner gate (0.7m)
+#   - approach-zone A remains Gate-3-only
 #
 # Usage:
 #   ./scripts/run/train_powerloop.sh [max_iterations] [num_envs]
@@ -27,7 +32,7 @@ REWARD_OVERRIDES='{"progress_goal_reward_scale":20.0,"lap_complete_reward_scale"
 ENV_OVERRIDES='{"track_name":"powerloop","replay_reset_ratio":0.25,"ground_reset_ratio":0.10,"staged_replay_reset":true,"replay_warmup_iterations":500,"replay_full_iterations":2000,"twr_randomization_pct":0.10,"aero_randomization_scale_min":0.5,"aero_randomization_scale_max":2.0,"pid_kpki_randomization_pct":0.15,"pid_kd_randomization_pct":0.30}'
 
 echo "========================================"
-echo "  Powerloop Training (R1+D1 + Gate-3 mask)"
+echo "  Powerloop Training (R1+D1 + Gate-3 mask + full-switch)"
 echo "  Iterations: $MAX_ITERS"
 echo "  Envs:       $NUM_ENVS"
 echo "  Reward:     $REWARD_OVERRIDES"
@@ -42,4 +47,4 @@ python scripts/rsl_rl/train_race.py \
     --max_iterations "$MAX_ITERS" \
     --headless \
     --logger wandb \
-    --run_name "powerloop-r1d1-gate3mask"
+    --run_name "powerloop-r1d1-gate3mask-fullswitch"

@@ -1061,17 +1061,18 @@ class CircleQuadcopterStrategy:
         """Sparse baseline reward with optional R1 gate-progress and lap bonus."""
         num_gates = self.env._waypoints.shape[0]
         gate_side = self.cfg.gate_model.gate_side
-        # Circle policies are commonly judged visually against the physical 1.0 m
-        # gate opening, so keep circle pass detection aligned with the visible
-        # gate. Powerloop continues to use the virtual inner opening.
-        pass_gate_side = 1.0 if self.cfg.track_name == "circle" else gate_side
-        gate_half_side = pass_gate_side / 2.0
+        # Split gate semantics:
+        # 1. target switch / lap counting uses the physical gate opening;
+        # 2. shaping / gate-pass bonus still uses the inner virtual opening.
+        switch_gate_half_side = 0.5
+        reward_gate_half_side = gate_side / 2.0
         dist_to_gate = torch.linalg.norm(self.env._pose_drone_wrt_gate, dim=1)
         curr_x = self.env._pose_drone_wrt_gate[:, 0]
         prev_x = self.env._prev_x_drone_wrt_gate
         gate_y = self.env._pose_drone_wrt_gate[:, 1]
         gate_z = self.env._pose_drone_wrt_gate[:, 2]
-        within_bounds = (gate_y.abs() < gate_half_side) & (gate_z.abs() < gate_half_side)
+        within_switch_bounds = (gate_y.abs() < switch_gate_half_side) & (gate_z.abs() < switch_gate_half_side)
+        within_reward_bounds = (gate_y.abs() < reward_gate_half_side) & (gate_z.abs() < reward_gate_half_side)
         crossed_plane = (prev_x > 0.0) & (curr_x <= 0.0)
 
         # Approach-zone gate: only enforce Fix A on powerloop Gate 3. Applying
@@ -1089,12 +1090,13 @@ class CircleQuadcopterStrategy:
 
         # Use the original default/Vineet-style pass detector so old checkpoints are
         # evaluated against the same semantics they were effectively trained with.
-        gate_passed = (dist_to_gate < 1.0) & crossed_plane & within_bounds & approach_valid
-        ids_gate_passed = torch.where(gate_passed)[0]
+        gate_switched = (dist_to_gate < 1.0) & crossed_plane & within_switch_bounds & approach_valid
+        gate_rewarded = gate_switched & within_reward_bounds
+        ids_gate_switched = torch.where(gate_switched)[0]
 
         # Match the older default behavior: only punish reverse crossings of the
         # current target gate, with a short cooldown after a valid pass.
-        wrong_side_crossed = (prev_x < 0.0) & (curr_x >= 0.0) & within_bounds
+        wrong_side_crossed = (prev_x < 0.0) & (curr_x >= 0.0) & within_switch_bounds
         self._steps_since_gate_pass += 1
         cooldown_ok = self._steps_since_gate_pass > 5
         wrong_side_ids = torch.where(wrong_side_crossed & cooldown_ok)[0]
@@ -1102,24 +1104,26 @@ class CircleQuadcopterStrategy:
             self.env._crashed[wrong_side_ids] = 200
             self._wrong_side_count += len(wrong_side_ids)
 
-        self.env._idx_wp[ids_gate_passed] = (self.env._idx_wp[ids_gate_passed] + 1) % num_gates
-        self.env._n_gates_passed[ids_gate_passed] += 1
-        self.env._desired_pos_w[ids_gate_passed] = self.env._waypoints[self.env._idx_wp[ids_gate_passed], :3]
+        self.env._idx_wp[ids_gate_switched] = (self.env._idx_wp[ids_gate_switched] + 1) % num_gates
+        self.env._n_gates_passed[ids_gate_switched] += 1
+        self.env._desired_pos_w[ids_gate_switched] = self.env._waypoints[self.env._idx_wp[ids_gate_switched], :3]
         self.env._prev_x_drone_wrt_gate = curr_x.clone()
-        if len(ids_gate_passed) > 0:
+        if len(ids_gate_switched) > 0:
             new_pose, _ = subtract_frame_transforms(
-                self.env._waypoints[self.env._idx_wp[ids_gate_passed], :3],
-                self.env._waypoints_quat[self.env._idx_wp[ids_gate_passed], :],
-                self.env._robot.data.root_link_pos_w[ids_gate_passed]
+                self.env._waypoints[self.env._idx_wp[ids_gate_switched], :3],
+                self.env._waypoints_quat[self.env._idx_wp[ids_gate_switched], :],
+                self.env._robot.data.root_link_pos_w[ids_gate_switched]
             )
-            self.env._prev_x_drone_wrt_gate[ids_gate_passed] = new_pose[:, 0]
+            self.env._prev_x_drone_wrt_gate[ids_gate_switched] = new_pose[:, 0]
             # Reset approach buffer to the new gate's frame x at transition
             # moment — next step's max() starts fresh for the new target.
-            self._max_x_since_gate_change[ids_gate_passed] = new_pose[:, 0]
-        gate_pass = gate_passed.float()
-        if len(ids_gate_passed) > 0:
-            self._steps_since_gate_pass[ids_gate_passed] = 0
-            self._record_gate_pass_replay(ids_gate_passed)
+            self._max_x_since_gate_change[ids_gate_switched] = new_pose[:, 0]
+        gate_pass = gate_rewarded.float()
+        if len(ids_gate_switched) > 0:
+            self._steps_since_gate_pass[ids_gate_switched] = 0
+        ids_gate_rewarded = torch.where(gate_rewarded)[0]
+        if len(ids_gate_rewarded) > 0:
+            self._record_gate_pass_replay(ids_gate_rewarded)
 
         # --- Previous-gate backtrack detection (Fix B, 2026-04-18c) ---
         # After passing gate N, the drone must not reverse-cross N's plane to
@@ -1135,8 +1139,8 @@ class CircleQuadcopterStrategy:
         )
         curr_x_wrt_prev = pose_wrt_prev[:, 0]
         prev_within_bounds = (
-            (pose_wrt_prev[:, 1].abs() < gate_half_side)
-            & (pose_wrt_prev[:, 2].abs() < gate_half_side)
+            (pose_wrt_prev[:, 1].abs() < switch_gate_half_side)
+            & (pose_wrt_prev[:, 2].abs() < switch_gate_half_side)
         )
         # Exclude envs that just passed a gate this step: their prev_gate
         # changed, so the buffer (in old prev_gate frame) vs curr (in new
@@ -1146,7 +1150,7 @@ class CircleQuadcopterStrategy:
             & (curr_x_wrt_prev >= 0.0)
             & prev_within_bounds
             & (self.env._n_gates_passed > 0)
-            & ~gate_passed
+            & ~gate_switched
         )
         backtrack_ids = torch.where(backtrack_crossed)[0]
         if self._backtrack_check_enabled and len(backtrack_ids) > 0:
@@ -1156,17 +1160,17 @@ class CircleQuadcopterStrategy:
         # passed) prev_gate, which equals the pre-pass curr_x — the override
         # below keeps the semantics explicit.
         self._prev_x_drone_wrt_prev_gate = curr_x_wrt_prev.clone()
-        if len(ids_gate_passed) > 0:
-            self._prev_x_drone_wrt_prev_gate[ids_gate_passed] = curr_x[ids_gate_passed]
+        if len(ids_gate_switched) > 0:
+            self._prev_x_drone_wrt_prev_gate[ids_gate_switched] = curr_x[ids_gate_switched]
 
         # --- Lap time tracking + optional lap bonus ---
         lap_bonus = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         reward_cfg = getattr(self.env, "rew", {})
-        if len(ids_gate_passed) > 0:
+        if len(ids_gate_switched) > 0:
             dt = self.cfg.sim.dt * self.cfg.decimation
-            gates_passed_count = self.env._n_gates_passed[ids_gate_passed]
+            gates_passed_count = self.env._n_gates_passed[ids_gate_switched]
             lap_complete_mask = (gates_passed_count > 0) & (gates_passed_count % num_gates == 0)
-            lap_complete_ids = ids_gate_passed[lap_complete_mask]
+            lap_complete_ids = ids_gate_switched[lap_complete_mask]
             if len(lap_complete_ids) > 0:
                 lap_bonus[lap_complete_ids] = 100.0 * float(reward_cfg.get("lap_complete_reward_scale", 0.0))
                 current_step = self.env.episode_length_buf[lap_complete_ids]
