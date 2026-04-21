@@ -4,6 +4,52 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Powerloop Fullswitch Real-Effective TWR Candidate] - 2026-04-22
+
+Added `scripts/run/train_powerloop_fullswitch_real_twr.sh` as a conservative
+A/B training entry for the next powerloop candidate. Added matching
+`scripts/run/eval_powerloop_real_twr.sh` so the candidate can be evaluated under
+the same nominal dynamics.
+
+This script keeps the current successful `R1+D1 + Gate-3 mask + fullswitch`
+logic and changes only the dynamics parameter with the strongest repeated
+evidence from real bags: effective thrust authority.
+
+- Nominal `thrust_to_weight`: `3.15 -> 1.87`
+- TWR randomization: narrow `±6%`
+- `mass_variation`: kept off, because the current implementation changes the
+  commanded thrust scale rather than the actual rigid-body mass/inertia.
+- Motor-tau and drag changes: kept off until there is a clean airborne sysid
+  bag.
+
+Rationale: real deployment maps policy thrust percentage to about `1.174 N`
+maximum command, while the real powerloop/circle bags consistently indicate an
+effective vehicle mass near `64 g`. That corresponds to an effective TWR of
+`1.174 / (0.064 * 9.81) ~= 1.87`. This is a cleaner test than widening DR around
+the old `3.15` nominal.
+
+Run:
+
+```bash
+./scripts/run/train_powerloop_fullswitch_real_twr.sh 3000 8192
+./scripts/run/eval_powerloop_real_twr.sh <run_dir> best_model.pt 768
+```
+
+### First sanity eval on existing fullswitch checkpoint
+
+User-reported result from running the existing `fullswitch` checkpoint under
+`eval_powerloop_real_twr.sh`:
+
+| Eval config | Time | Gates | Laps |
+|---|---:|---:|---:|
+| `powerloop`, `thrust_to_weight=1.87` | `21.16 s` | 22 | `3/3` |
+
+This makes the TWR change look directionally correct: the old checkpoint still
+finishes the 3-lap task under the lower real-effective thrust authority, and the
+behavior is reported as qualitatively closer to real flight. This is not yet a
+trained-policy conclusion, but it is enough evidence to justify starting a new
+training run with `thrust_to_weight=1.87` as the nominal dynamics.
+
 ## [Real Powerloop Bag Evaluation: Official 3-Lap Timing] - 2026-04-21
 
 ### Purpose
@@ -50,12 +96,39 @@ Source:
 rosbags_powerloop_baseline_controller_04_20/summary.csv
 ```
 
-| Bag | Official 3-lap eval (s) | Complete ordered laps | Ordered passes | Valid passes | Best lap (s) | Mean lap (s) | Lap std (s) | Max speed (m/s) | Max tilt (deg) | Max body-rate cmd (deg/s) |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `powerloop-r1d1-gate3mask` | **22.435** | 4 | 33 | 42 | **7.355** | **7.451** | **0.074** | 5.302 | 148.969 | 244.784 |
-| `powerloop-r1d1-gate3mask-fullswitch` | 22.943 | 5 | 38 | 48 | 7.495 | 7.729 | 0.184 | **5.572** | 149.337 | 244.862 |
-| `powerloop-fixed-baseline` | n/a | 0 | 4 | 9 | n/a | n/a | n/a | n/a | n/a | n/a |
-| `sysid` | n/a | 0 | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a |
+| Bag | Official 3-lap eval (s) | Complete ordered laps | Ordered passes | Valid passes | Best lap (s) | Mean lap (s) | Lap std (s) | Min clearance (m) | Mean clearance (m) | Max speed (m/s) | Max body-rate cmd (deg/s) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `powerloop-r1d1-gate3mask` | **22.435** | 4 | 33 | 42 | **7.355** | **7.451** | **0.074** | -0.048 | 0.188 | 5.302 | 244.784 |
+| `powerloop-r1d1-gate3mask-fullswitch` | 22.943 | 5 | 38 | 48 | 7.495 | 7.729 | 0.184 | -0.017 | **0.201** | **5.572** | 244.862 |
+| `powerloop-fixed-baseline` | n/a | 0 | 4 | 9 | n/a | n/a | n/a | -0.009 | 0.211 | n/a | n/a |
+| `sysid` | n/a | 0 | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
+
+Ordered-pass clearance by gate:
+
+| Bag | Gate | Ordered clearance (m) |
+|---|---:|---|
+| `powerloop-r1d1-gate3mask` | 0 | `0.016 -0.025 -0.011 -0.048 -0.029` |
+|  | 1 | `0.297 0.337 0.313 0.313 0.286` |
+|  | 2 | `0.283 0.271 0.310 0.282 0.295` |
+|  | 3 | `0.313 0.210 0.265 0.332 0.307` |
+|  | 4 | `0.086 0.119 0.113 0.078 0.112` |
+|  | 5 | `0.025 -0.015 0.015 0.025` |
+|  | 6 | `0.393 0.242 0.322 0.378` |
+| `powerloop-r1d1-gate3mask-fullswitch` | 0 | `0.009 -0.017 0.021 -0.010 0.001 0.043` |
+|  | 1 | `0.329 0.304 0.235 0.278 0.235 0.229` |
+|  | 2 | `0.338 0.339 0.334 0.341 0.314 -0.003` |
+|  | 3 | `0.300 0.330 0.338 0.272 0.316` |
+|  | 4 | `0.243 0.244 0.223 0.181 0.233` |
+|  | 5 | `0.023 0.011 0.019 0.030 0.045` |
+|  | 6 | `0.332 0.376 0.272 0.287 0.254` |
+
+Mean segment times:
+
+| Bag | start->0 | 0->1 | 1->2 | 2->3 | 3->4 | 4->5 | 5->6 | 6->0 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `powerloop-r1d1-gate3mask` | 0.994 | 1.122 | **0.958** | **1.502** | **1.054** | **1.039** | **0.933** | **0.880** |
+| `powerloop-r1d1-gate3mask-fullswitch` | **0.937** | **1.117** | 1.028 | 1.510 | 1.058 | 1.157 | 0.961 | 0.961 |
+| `powerloop-fixed-baseline` | 0.925 | 1.045 | 1.027 | 6.771 | n/a | n/a | n/a | n/a |
 
 Definitions:
 
@@ -63,6 +136,10 @@ Definitions:
   crossing point, is inside the physical gate window. The current detector uses
   a `1.0 m x 1.0 m` window with `0.05 m` slack, so the threshold is
   `|lateral| < 0.55 m` and `|vertical| < 0.55 m`.
+- `clearance`: physical gate-edge margin at an ordered pass,
+  `0.5 - max(|lateral|, |vertical|)`. Positive means the drone center is inside
+  the nominal `1.0 m` opening; slightly negative means it was counted valid
+  only because of the `0.05 m` detector slack.
 - `ordered pass`: a `valid pass` that matches the expected gate sequence
   `0 -> 1 -> ... -> 6`. Official timing is computed from these ordered passes.
 - `near-miss` is no longer used as a reporting metric for this result. In this
@@ -85,19 +162,54 @@ to real flight well enough to repeatedly complete the 7-gate sequence.
 - `0.508 s` faster than `fullswitch`
 - lower lap mean (`7.451 s` vs `7.729 s`)
 - lower lap std (`0.074 s` vs `0.184 s`)
+- faster through most post-powerloop segments, especially `4->5`, `5->6`, and
+  `6->0`
 
-`powerloop-r1d1-gate3mask-fullswitch` has more recorded passes/laps in this
-specific bag, but this should not be interpreted as better durability because
-the bags were not necessarily recorded for the same duration. The fair
-comparison metric here is the official first-3-lap eval time.
+`powerloop-r1d1-gate3mask-fullswitch` has cleaner geometry in several places:
+
+- higher mean ordered-pass clearance (`0.201 m` vs `0.188 m`)
+- better Gate 3 clearance (`min 0.272 m` vs `0.210 m`)
+- much better Gate 4 clearance (`min 0.181 m` vs `0.078 m`)
+
+This suggests `fullswitch` is not slower because it fails the powerloop. The
+actual powerloop segments are nearly identical:
+
+- `2->3`: `1.510 s` vs `1.502 s`
+- `3->4`: `1.058 s` vs `1.054 s`
+
+The speed loss is mostly after the loop:
+
+- `4->5`: `1.157 s` vs `1.039 s`
+- `5->6`: `0.961 s` vs `0.933 s`
+- `6->0`: `0.961 s` vs `0.880 s`
+
+So the best current interpretation is: `fullswitch` is slightly more
+conservative and has better gate-edge clearance, especially at Gates 3 and 4,
+but gives up time in the post-loop straight/chicane and return-to-Gate-0
+segments.
+
+The one `fullswitch` Gate 2 clearance value of `-0.003 m` happened during the
+final stopping/outlier portion of the recording and should not drive the policy
+choice. Gate 0 and Gate 5 remain tight for both policies.
+
+The extra recorded passes/laps in the `fullswitch` bag should not be interpreted
+as better durability because the bags were not necessarily recorded for the
+same duration. The fair comparison metric here is the official first-3-lap eval
+time.
 
 ### Conclusion
 
 For official first-3-lap timing, `powerloop-r1d1-gate3mask` was the faster real
-policy in this batch. The extra completed laps in the `fullswitch` bag should
-not be used as evidence of better robustness unless future tests use matched
-recording duration or continue-until-failure protocol. The baseline should not
-be used as the main powerloop candidate.
+policy in this batch. For the next training base, `fullswitch` is still a
+reasonable choice because its target-switch semantics are cleaner and its Gate
+3 / Gate 4 clearances look better; the likely speed loss is in the post-loop
+straight/chicane segments rather than in the powerloop itself. The baseline
+should not be used as the main powerloop candidate.
+
+Next experiment direction: keep the `fullswitch` base and avoid making the
+Gate 3 powerloop more aggressive for now. Instead, target speed/racing-line
+improvements on `4->5`, `5->6`, and `6->0`, where the real bag shows most of
+the time loss.
 
 ---
 
