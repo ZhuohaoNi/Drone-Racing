@@ -1,7 +1,8 @@
 # Powerloop Dynamics Analysis — Cross-Track Confirmation of the Circle-Track Sysid Story
 
 **Date:** 2026-04-21
-**Scope:** Three powerloop-track rosbags recorded on the race arena on 2026-04-20 with the pre-race baseline controller, compared against the 2026-04-08 / 2026-04-15 circle-track bags analyzed in `../rosbags_04_15/dynamics_analysis.md`. The goal is to check whether the sim-real gaps we previously saw on the circle — consistent hardware signatures alongside policy-driven metric variance — also show up on the harder powerloop track, and to pull out what transfers to sysid / DR tuning.
+**Scope:** Three powerloop-track rosbags recorded on the race arena on 2026-04-20 with the pre-race baseline controller, compared against the 2026-04-08 / 2026-04-15 circle-track bags analyzed in `../rosbags_04_15/dynamics_analysis.md`. The goal is to check whether the sim-real gaps we previously saw on the c
+ircle — consistent hardware signatures alongside policy-driven metric variance — also show up on the harder powerloop track, and to pull out what transfers to sysid / DR tuning.
 
 **Bags:**
 
