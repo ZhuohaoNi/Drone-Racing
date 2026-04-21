@@ -1,22 +1,33 @@
 #!/usr/bin/env bash
-# Batch-run lap_time.py on all rosbag directories under a given root,
-# skipping 'plots' folders. Produces a CSV summary + printed table.
+# Batch-run race timing/summary on every rosbag under a folder.
+#
+# This intentionally does not generate plots. It runs lap_time.py only and
+# prints/writes the metrics that matter for post-real-test comparison.
 #
 # Usage:
 #   scripts/run/batch_test_bags.sh <bag_root> [namespace] [num_laps]
 #
 # Examples:
-#   scripts/run/batch_test_bags.sh rosbags_04_15
+#   scripts/run/batch_test_bags.sh rosbags_powerloop_baseline_controller_04_20
 #   scripts/run/batch_test_bags.sh /abs/path/to/rosbags crazy_jirl_b3 3
-#   scripts/run/batch_test_bags.sh rosbags crazy_jirl_b2
+#   TRACK=circle scripts/run/batch_test_bags.sh rosbags crazy_jirl_b2 3
 set -eo pipefail
 
 BAG_ROOT_ARG="${1:?Usage: $0 <bag_root> [namespace] [num_laps]}"
 NAMESPACE="${2:-crazy_jirl_b3}"
 NUM_LAPS="${3:-3}"
+TRACK="${TRACK:-powerloop}"
 
 PROJECT="$HOME/Documents/ese6510/ese651_project"
 REPO="$HOME/Documents/ese6510/Drone-Racing-sim2real"
+
+case "$TRACK" in
+  powerloop|powerloop_sim|circle|config) ;;
+  *)
+    echo "Unknown TRACK='$TRACK'. Use TRACK=powerloop, TRACK=powerloop_sim, TRACK=circle, or TRACK=config." >&2
+    exit 1
+    ;;
+esac
 
 # Resolve bag root: absolute path as-is, otherwise relative to project.
 if [[ "$BAG_ROOT_ARG" = /* ]]; then
@@ -44,104 +55,180 @@ source "$REPO/install/setup.sh"
 
 cd "$REPO"
 
-# Output CSV
 CSV_OUT="$BAG_ROOT/summary.csv"
-echo "bag,laps_strict,seq_breaks,best_lap,mean_lap,median_lap,std_lap,takeoff_to_3,fastest_3lap,path_per_lap,mean_speed,max_speed,mean_tilt,max_tilt,mean_br,max_br,mean_thrust,max_thrust" > "$CSV_OUT"
-
-# Temp dir for per-bag output
 TMPDIR_BATCH=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_BATCH"' EXIT
 
-# Discover bags: directories under BAG_ROOT that contain .mcap files, skip 'plots'
+cat > "$CSV_OUT" <<'CSV'
+bag,status,eval_first_n_laps_time,race_start_cmd_t,eval_first_n_laps_end_t,eval_first_n_laps_end_gate,complete_laps_expected_order,ordered_passes,total_valid_passes,total_near_misses,sequence_breaks,valid_per_gate,near_miss_per_gate,best_lap,mean_lap,median_lap,std_lap,fastest_n_lap_window_time,takeoff_to_n_laps_gate0_close,first_n_lap_sum_gate0_to_gate0,path_length_race,mean_speed,max_speed,mean_tilt,max_tilt,mean_body_rate_cmd,max_body_rate_cmd,mean_thrust,max_thrust,bag_path
+CSV
+
+# Discover bag directories directly under BAG_ROOT. Skip plots and directories
+# without bag data. ROS2 bags are usually directories containing .mcap/.db3.
 BAGS=()
 for dir in "$BAG_ROOT"/*/; do
+  [[ -d "$dir" ]] || continue
   dirname=$(basename "$dir")
   [[ "$dirname" == "plots" ]] && continue
-  # Check that directory contains at least one .mcap file
-  if ls "$dir"/*.mcap &>/dev/null; then
-    BAGS+=("$dir")
+  if compgen -G "$dir/*.mcap" >/dev/null || compgen -G "$dir/*.db3" >/dev/null || [[ -f "$dir/metadata.yaml" ]]; then
+    BAGS+=("${dir%/}")
   fi
 done
 
+# Also allow a root folder containing .mcap/.db3 files directly.
+if compgen -G "$BAG_ROOT/*.mcap" >/dev/null || compgen -G "$BAG_ROOT/*.db3" >/dev/null || [[ -f "$BAG_ROOT/metadata.yaml" ]]; then
+  BAGS+=("$BAG_ROOT")
+fi
+
 if [[ ${#BAGS[@]} -eq 0 ]]; then
-  echo "No rosbag directories found under $BAG_ROOT" >&2
+  echo "No ROS2 bag directories/files found under $BAG_ROOT" >&2
   exit 1
 fi
 
-# Sort alphabetically
-IFS=$'\n' BAGS=($(sort <<<"${BAGS[*]}")); unset IFS
+IFS=$'\n' BAGS=($(sort -u <<<"${BAGS[*]}")); unset IFS
 
-echo "=== Batch analysis: ${#BAGS[@]} bags under $BAG_ROOT ==="
-echo "=== Namespace: $NAMESPACE | Laps: $NUM_LAPS ==="
+echo "=== Batch bag test ==="
+echo "Root:      $BAG_ROOT"
+echo "Bags:      ${#BAGS[@]}"
+echo "Namespace: $NAMESPACE"
+echo "Track:     $TRACK"
+echo "Eval:      race-start command → lap $NUM_LAPS last gate"
 echo
 
 FAIL_COUNT=0
 
 for bag_path in "${BAGS[@]}"; do
   bag_name=$(basename "$bag_path")
-  outfile="$TMPDIR_BATCH/${bag_name}.txt"
+  safe_name=${bag_name//[^A-Za-z0-9_.-]/_}
+  txt_out="$TMPDIR_BATCH/${safe_name}.txt"
+  json_out="$TMPDIR_BATCH/${safe_name}.json"
 
   echo "--- Processing: $bag_name ---"
-  if ! python3 bin/lap_time.py "$bag_path" "$NAMESPACE" "$NUM_LAPS" > "$outfile" 2>&1; then
-    echo "  FAILED (see $outfile)"
-    echo "$bag_name,FAILED,,,,,,,,,,,,,,,,," >> "$CSV_OUT"
+  if ! python3 bin/lap_time.py "$bag_path" "$NAMESPACE" "$NUM_LAPS" \
+      --track "$TRACK" \
+      --summary-json "$json_out" \
+      > "$txt_out" 2>&1; then
+    echo "  FAILED"
+    python3 - "$CSV_OUT" "$bag_name" "$bag_path" <<'PY'
+import csv
+import sys
+
+csv_path, bag_name, bag_path = sys.argv[1:4]
+header = open(csv_path, newline="").readline().strip().split(",")
+row = {key: "" for key in header}
+row.update({"bag": bag_name, "status": "FAILED", "bag_path": bag_path})
+with open(csv_path, "a", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=header)
+    writer.writerow(row)
+PY
     ((FAIL_COUNT++)) || true
     continue
   fi
 
-  # Parse key metrics from lap_time.py output
-  output=$(cat "$outfile")
+  python3 - "$CSV_OUT" "$json_out" "$bag_name" "$bag_path" <<'PY'
+import csv
+import json
+import sys
 
-  laps_strict=$(echo "$output" | grep -oP 'Complete laps \(strict order\):\s*\K\d+' || echo "0")
-  seq_breaks=$(echo "$output" | grep -oP 'Sequence breaks ignored:\s*\K\d+' || echo "0")
-  best_lap=$(echo "$output" | grep -oP 'Best lap:\s*\K[\d.]+' || echo "")
-  mean_lap=$(echo "$output" | grep -oP 'Mean lap:\s*\K[\d.]+' || echo "")
-  median_lap=$(echo "$output" | grep -oP 'Median lap:\s*\K[\d.]+' || echo "")
-  std_lap=$(echo "$output" | grep -oP 'Lap std \(consistency\):\s*\K[\d.]+' || echo "")
-  takeoff_3=$(echo "$output" | grep -oP "Takeoff → $NUM_LAPS laps done:\s*\K[\d.]+" || echo "")
-  fastest_3=$(echo "$output" | grep -oP "Laps \d+–\d+:\s*\K[\d.]+" || echo "")
-  path_len=$(echo "$output" | grep -oP 'Path length \(race\):\s*\K[\d.]+' || echo "")
-  mean_speed=$(echo "$output" | grep -oP 'Mean / max speed:\s*\K[\d.]+' || echo "")
-  max_speed=$(echo "$output" | grep -oP 'Mean / max speed:\s*[\d.]+ / \K[\d.]+' || echo "")
-  mean_tilt=$(echo "$output" | grep -oP 'Mean / max tilt:\s*\K[\d.]+' || echo "")
-  max_tilt=$(echo "$output" | grep -oP 'Mean / max tilt:\s*[\d.]+ / \K[\d.]+' || echo "")
-  mean_br=$(echo "$output" | grep -oP 'Mean / max body rate:\s*\K[\d.]+' || echo "nan")
-  max_br=$(echo "$output" | grep -oP 'Mean / max body rate:\s*[\d.]+ / \K[\d.]+' || echo "nan")
-  mean_thrust=$(echo "$output" | grep -oP 'Mean / max thrust:\s*\K[\d.]+' || echo "nan")
-  max_thrust=$(echo "$output" | grep -oP 'Mean / max thrust:\s*[\d.]+ / \K[\d.]+' || echo "nan")
+csv_path, json_path, bag_name, bag_path = sys.argv[1:5]
+data = json.load(open(json_path))
+header = open(csv_path, newline="").readline().strip().split(",")
 
-  # Compute path per lap
-  path_per_lap=""
-  if [[ -n "$path_len" && -n "$laps_strict" && "$laps_strict" -gt 0 ]]; then
-    path_per_lap=$(python3 -c "print(f'{${path_len}/${laps_strict}:.2f}')")
-  fi
+def val(key):
+    value = data.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    if isinstance(value, list):
+        return " ".join(str(x) for x in value)
+    return value
 
-  echo "$bag_name,$laps_strict,$seq_breaks,$best_lap,$mean_lap,$median_lap,$std_lap,$takeoff_3,$fastest_3,$path_per_lap,$mean_speed,$max_speed,$mean_tilt,$max_tilt,$mean_br,$max_br,$mean_thrust,$max_thrust" >> "$CSV_OUT"
+row = {key: "" for key in header}
+row.update({
+    "bag": bag_name,
+    "status": "OK",
+    "bag_path": bag_path,
+})
+for key in header:
+    if key in row and row[key] != "":
+        continue
+    row[key] = val(key)
 
-  echo "  Laps: $laps_strict (breaks: $seq_breaks) | Best: ${best_lap}s | Mean: ${mean_lap}s | Std: ${std_lap}s | Takeoff→3: ${takeoff_3:-n/a}s"
+with open(csv_path, "a", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=header)
+    writer.writerow(row)
+PY
+
+  eval_time=$(python3 - "$json_out" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+v = data.get("eval_first_n_laps_time")
+laps = data.get("complete_laps_expected_order")
+valid = data.get("total_valid_passes")
+miss = data.get("total_near_misses")
+print(("n/a" if v is None else f"{v:.3f}") + f" | laps={laps} valid={valid} miss={miss}")
+PY
+)
+  echo "  Eval: $eval_time"
 done
 
 echo
 echo "=== Summary CSV written to: $CSV_OUT ==="
 echo
 
-# Print summary table sorted by takeoff→3 laps
-echo "=== Summary Table (sorted by Takeoff → $NUM_LAPS laps) ==="
-echo
-printf "%-35s %5s %3s %7s %7s %7s %7s %10s %10s %8s %7s %7s\n" \
-  "Bag" "Laps" "Brk" "Best" "Mean" "Median" "Std" "TO→3lap" "Fast3lap" "Path/l" "v_max" "tilt_m"
-printf '%.0s-' {1..130}; echo
+python3 - "$CSV_OUT" "$NUM_LAPS" <<'PY'
+import csv
+import math
+import sys
 
-# Sort by takeoff→3 (column 8), put empties last
-tail -n +2 "$CSV_OUT" | sort -t',' -k8 -n -s | while IFS=',' read -r bag laps brk best mean median std to3 f3 ppl ms mxs mt mxt mbr mxbr mthr mxthr; do
-  [[ "$laps" == "FAILED" ]] && { printf "%-35s  FAILED\n" "$bag"; continue; }
-  printf "%-35s %5s %3s %7s %7s %7s %7s %10s %10s %8s %7s %7s\n" \
-    "$bag" "$laps" "$brk" "$best" "$mean" "$median" "$std" "${to3:-n/a}" "${f3:-n/a}" "${ppl:-n/a}" "${mxs:-n/a}" "${mxt:-n/a}"
-done
+csv_path, num_laps = sys.argv[1:3]
+rows = list(csv.DictReader(open(csv_path, newline="")))
 
-echo
+def as_float(row, key):
+    try:
+        return float(row.get(key, ""))
+    except ValueError:
+        return math.inf
+
+rows.sort(key=lambda r: (as_float(r, "eval_first_n_laps_time"), r["bag"]))
+
+print(f"=== Summary Table (sorted by eval first {num_laps} laps) ===")
+print()
+header = (
+    f"{'Bag':36s} {'Eval':>8s} {'Laps':>4s} {'Ord':>4s} {'Valid':>5s} "
+    f"{'Miss':>5s} {'Brk':>4s} {'Best':>7s} {'Mean':>7s} {'Std':>6s} "
+    f"{'vMax':>6s} {'tiltMax':>7s} {'brMax':>7s} {'valid/gate':>18s}"
+)
+print(header)
+print("-" * len(header))
+for row in rows:
+    if row["status"] != "OK":
+        print(f"{row['bag']:36s} {'FAILED':>8s}")
+        continue
+    print(
+        f"{row['bag'][:36]:36s} "
+        f"{(row['eval_first_n_laps_time'] or 'n/a'):>8s} "
+        f"{row['complete_laps_expected_order']:>4s} "
+        f"{row['ordered_passes']:>4s} "
+        f"{row['total_valid_passes']:>5s} "
+        f"{row['total_near_misses']:>5s} "
+        f"{row['sequence_breaks']:>4s} "
+        f"{(row['best_lap'] or 'n/a'):>7s} "
+        f"{(row['mean_lap'] or 'n/a'):>7s} "
+        f"{(row['std_lap'] or 'n/a'):>6s} "
+        f"{(row['max_speed'] or 'n/a'):>6s} "
+        f"{(row['max_tilt'] or 'n/a'):>7s} "
+        f"{(row['max_body_rate_cmd'] or 'n/a'):>7s} "
+        f"{row['valid_per_gate'][:18]:>18s}"
+    )
+
+print()
+print("Eval = first N laps measured from first race command to the N-th lap's last gate.")
+PY
+
 if [[ $FAIL_COUNT -gt 0 ]]; then
-  echo "⚠  $FAIL_COUNT bag(s) failed. Check individual output in $TMPDIR_BATCH/"
-  # Don't clean up tmpdir on failure
+  echo
+  echo "$FAIL_COUNT bag(s) failed. Raw outputs kept in: $TMPDIR_BATCH"
   trap - EXIT
 fi

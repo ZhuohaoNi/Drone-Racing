@@ -4,6 +4,103 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Real Powerloop Bag Evaluation: Official 3-Lap Timing] - 2026-04-21
+
+### Purpose
+
+After the first real-world powerloop test, update the bag analysis to match the
+evaluation timing used for race comparison:
+
+**first 3 laps = first race-start command → crossing the last gate of lap 3**
+
+For the 7-gate powerloop track, the endpoint is the ordered Gate 6 crossing of
+lap 3, not the next Gate 0 crossing, and not takeoff time.
+
+### Tooling changes
+
+- `scripts/run/test_bag.sh`
+  - Defaults to real powerloop bag coordinates.
+  - Runs `lap_time.py` with `--track powerloop`.
+  - Keeps full plot analysis available, but skips desired trajectory and
+    animation by default.
+- `scripts/run/batch_test_bags.sh`
+  - Runs every ROS2 bag under a given folder.
+  - Does not generate plots.
+  - Writes `summary.csv`.
+  - Prints a compact comparison table sorted by official eval time.
+- `bin/lap_time.py` in the sim2real repo
+  - Adds machine-readable `--summary-json`.
+  - Adds official `eval_first_n_laps_time`.
+  - Uses real powerloop mocap coordinates (`sim_y + 4.5 m`).
+  - Handles the powerloop shared physical gate where Gate 3 and Gate 6 can
+    trigger at nearly the same timestamp.
+
+### Command
+
+```bash
+cd /home/peterni/Documents/ese6510/ese651_project
+./scripts/run/batch_test_bags.sh rosbags_powerloop_baseline_controller_04_20 crazy_jirl_b3 3
+```
+
+### Results
+
+Source:
+
+```text
+rosbags_powerloop_baseline_controller_04_20/summary.csv
+```
+
+| Bag | Official 3-lap eval (s) | Complete ordered laps | Ordered passes | Valid passes | Best lap (s) | Mean lap (s) | Lap std (s) | Max speed (m/s) | Max tilt (deg) | Max body-rate cmd (deg/s) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `powerloop-r1d1-gate3mask` | **22.435** | 4 | 33 | 42 | **7.355** | **7.451** | **0.074** | 5.302 | 148.969 | 244.784 |
+| `powerloop-r1d1-gate3mask-fullswitch` | 22.943 | 5 | 38 | 48 | 7.495 | 7.729 | 0.184 | **5.572** | 149.337 | 244.862 |
+| `powerloop-fixed-baseline` | n/a | 0 | 4 | 9 | n/a | n/a | n/a | n/a | n/a | n/a |
+| `sysid` | n/a | 0 | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a |
+
+Definitions:
+
+- `valid pass`: the drone crosses a gate's plane and, at the interpolated
+  crossing point, is inside the physical gate window. The current detector uses
+  a `1.0 m x 1.0 m` window with `0.05 m` slack, so the threshold is
+  `|lateral| < 0.55 m` and `|vertical| < 0.55 m`.
+- `ordered pass`: a `valid pass` that matches the expected gate sequence
+  `0 -> 1 -> ... -> 6`. Official timing is computed from these ordered passes.
+- `near-miss` is no longer used as a reporting metric for this result. In this
+  detector it only means "crossed a gate's infinite plane outside the gate
+  window", which is noisy on powerloop and not useful as a success/failure
+  metric.
+
+### Interpretation
+
+The fixed baseline is not a viable real powerloop policy in this test. It never
+formed a complete ordered lap and has only sparse valid gate passes.
+
+Both R1D1 gate3mask policies successfully executed real ordered powerloop laps.
+This is the important result: the powerloop-specific training logic transferred
+to real flight well enough to repeatedly complete the 7-gate sequence.
+
+`powerloop-r1d1-gate3mask` is faster on the official 3-lap metric:
+
+- `22.435 s` official eval
+- `0.508 s` faster than `fullswitch`
+- lower lap mean (`7.451 s` vs `7.729 s`)
+- lower lap std (`0.074 s` vs `0.184 s`)
+
+`powerloop-r1d1-gate3mask-fullswitch` has more recorded passes/laps in this
+specific bag, but this should not be interpreted as better durability because
+the bags were not necessarily recorded for the same duration. The fair
+comparison metric here is the official first-3-lap eval time.
+
+### Conclusion
+
+For official first-3-lap timing, `powerloop-r1d1-gate3mask` was the faster real
+policy in this batch. The extra completed laps in the `fullswitch` bag should
+not be used as evidence of better robustness unless future tests use matched
+recording duration or continue-until-failure protocol. The baseline should not
+be used as the main powerloop candidate.
+
+---
+
 ## [Powerloop Split Gate Semantics: Full Switch, Virtual Reward, Gate-3-Only Approach Gate] - 2026-04-20
 
 ### Purpose
