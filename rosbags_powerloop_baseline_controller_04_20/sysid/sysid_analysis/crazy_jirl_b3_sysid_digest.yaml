@@ -1,0 +1,35 @@
+source_bag: /home/bruce/penn/ese651/Drone-Racing/rosbags_powerloop_baseline_controller_04_20/sysid
+namespace: crazy_jirl_b3
+flight_duration_s: 139.35
+aborted: true
+t_abort_s: 102.35
+phases_entered: 31
+phases_aborted_or_partial: 0
+identified:
+  obs_lin_vel_b_bias_mean_mps:
+  - 0.001
+  - -0.0006
+  - -0.0
+  obs_lin_vel_b_noise_std_mps:
+  - 0.005
+  - 0.0027
+  - 0.0029
+  rate_tracking:
+    roll:
+      lag_ms: 60.0
+      cmd_std_deg_s: 17.76
+      actual_std_deg_s: 44.04
+      xcorr_score: 0.282
+    pitch:
+      lag_ms: 70.0
+      cmd_std_deg_s: 16.5
+      actual_std_deg_s: 29.07
+      xcorr_score: 0.314
+    yaw:
+      lag_ms: 90.0
+      cmd_std_deg_s: 23.06
+      actual_std_deg_s: 20.64
+      xcorr_score: 0.606
+gaps:
+- "mass \u2014 no stable hover with >0.3 m altitude + low tilt was reached"
+- "TWR/drag \u2014 no sustained low-tilt flight window before abort"

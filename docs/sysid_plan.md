@@ -181,7 +181,9 @@ Each phase is commanded as an SE3 trajectory. Every phase emits `/sysid_referenc
 
 ### 3.3 Safety & practical notes
 
-- All chirps/steps start from a stable hover; controller rejects any phase start if pose error > 0.15 m or tilt > 20°.
+- **/race is called from the ground (SOP).** The sysid controller auto-ramps (z-only min-jerk) from the current pose up to `hover_altitude_m` (default 1.0 m) over `takeoff_duration_s` (default 3.0 s) as an implicit Phase −1 before any probe begins. No prior `takeoff` call is required.
+- All chirps/steps run against a stable sysid hover center (established by the ramp above). The `max_tilt_deg = 30°` config value is used only for internal sizing; the effective hover envelope before emitting a warning is `max_tilt_deg × 1.5 = 45°`.
+- **Tilt does not abort the sysid schedule.** Excursions past the 45° warning threshold emit a rate-limited stdout warning but the scheduler keeps running so data collection is not lost. If the drone is genuinely unsafe, the operator calls `/stop`.
 - Velocity limits: 3 m/s horizontal, 1.5 m/s vertical. Rate chirps cap at hardware doublet maxes (±200 °/s roll/pitch, ±150 °/s yaw).
 - If Vicon drops out mid-phase, abort the phase cleanly via SE3 land — do not re-enable the rate-chirp after recovery in the same bag.
 - Run the full protocol **twice in one session** if possible: once on a fresh battery, once on a drained one. Gives a two-point sample of voltage-dependent thrust decay at almost no extra cost.

@@ -1,0 +1,808 @@
+{
+  "bag": "/home/bruce/penn/ese651/Drone-Racing/rosbags_powerloop_baseline_controller_04_20/sysid",
+  "namespace": "crazy_jirl_b3",
+  "duration_s": 139.3498227596283,
+  "topic_counts": {
+    "/multi_odometry": 13919,
+    "/crazy_jirl_b3/pose": 16722,
+    "/tf": 16722,
+    "/crazy_jirl_b3/odom": 13917,
+    "/crazy_jirl_b3/observations": 13516,
+    "/ctbr_cmd": 13516
+  },
+  "t_abort_s": 102.34845471382141,
+  "n_phases": 31,
+  "phases": [
+    {
+      "start_idx": 0,
+      "end_idx": 121,
+      "t_start": 4.026146173477173,
+      "t_end": 5.224705219268799,
+      "duration_observed_s": 1.198559045791626,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 0,
+      "phase_duration_s": 1.2,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 1.199568271636963,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 121,
+      "end_idx": 182,
+      "t_start": 5.233124256134033,
+      "t_end": 5.83301568031311,
+      "duration_observed_s": 0.5998914241790771,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 0,
+      "phase_duration_s": 0.6,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 0.5999367237091064,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 182,
+      "end_idx": 882,
+      "t_start": 5.841644048690796,
+      "t_end": 12.841376781463623,
+      "duration_observed_s": 6.999732732772827,
+      "dim_code": 1,
+      "dim": "mass",
+      "detail": 1,
+      "round": 0,
+      "phases_emitted": 1,
+      "phase_duration_s": 7.0,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 6.999730348587036,
+      "analysis": {
+        "stationary_noise_and_bias": {
+          "n_samples_obs": 698,
+          "n_samples_odom_still": 699,
+          "obs_lin_vel_mean_mps": [
+            -1.609089139329839e-05,
+            -0.0004979528427123462,
+            2.2237548694704625e-05
+          ],
+          "obs_lin_vel_std_mps": [
+            0.004019384404450533,
+            0.0030172221366141236,
+            0.0028712552382859735
+          ],
+          "odom_lin_vel_mean_mps": [
+            1.5366755103519205e-06,
+            -0.0005070714528421846,
+            3.304602463217485e-05
+          ],
+          "altitude_mean_m": 0.036694790408694854,
+          "world_speed_max_mps": 0.017553229958522636
+        }
+      }
+    },
+    {
+      "start_idx": 882,
+      "end_idx": 1002,
+      "t_start": 12.849844217300415,
+      "t_end": 14.041210174560547,
+      "duration_observed_s": 1.1913659572601318,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 1,
+      "phase_duration_s": 1.2,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 1.1914262771606445,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 1002,
+      "end_idx": 1063,
+      "t_start": 14.050054788589478,
+      "t_end": 14.649765014648438,
+      "duration_observed_s": 0.59971022605896,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 1,
+      "phase_duration_s": 0.6,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 0.5997471809387207,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 1063,
+      "end_idx": 1663,
+      "t_start": 14.658751249313354,
+      "t_end": 20.658393144607544,
+      "duration_observed_s": 5.9996418952941895,
+      "dim_code": 2,
+      "dim": "vert",
+      "detail": 1,
+      "round": 0,
+      "phases_emitted": 2,
+      "phase_duration_s": 6.0,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 5.9996514320373535,
+      "analysis": {
+        "vertical_excitation": {
+          "thrust_n_mean": 0.29407637232164724,
+          "thrust_n_std": 0.0898438063627367,
+          "vz_std_mps": 0.003156588479094438,
+          "vz_peak_abs_mps": 0.01173298163523575
+        }
+      }
+    },
+    {
+      "start_idx": 1663,
+      "end_idx": 1783,
+      "t_start": 20.674803972244263,
+      "t_end": 21.858296632766724,
+      "duration_observed_s": 1.183492660522461,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 2,
+      "phase_duration_s": 1.2,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 1.1835682392120361,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 1783,
+      "end_idx": 1844,
+      "t_start": 21.874816417694092,
+      "t_end": 22.467233896255493,
+      "duration_observed_s": 0.5924174785614014,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 2,
+      "phase_duration_s": 0.6,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 0.5924808979034424,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 1844,
+      "end_idx": 2344,
+      "t_start": 22.48328733444214,
+      "t_end": 27.483068466186523,
+      "duration_observed_s": 4.999781131744385,
+      "dim_code": 3,
+      "dim": "roll",
+      "detail": 1,
+      "round": 0,
+      "phases_emitted": 3,
+      "phase_duration_s": 5.0,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 4.999817371368408,
+      "analysis": {
+        "rate_tracking": {
+          "roll": {
+            "status": "ok",
+            "lag_s": 0.2,
+            "xcorr_score": 0.13464399636954957,
+            "cmd_std_deg_s": 2.9613159292619375,
+            "actual_std_deg_s": 4.6546876357327704,
+            "cmd_peak_abs_deg_s": 8.509592531885197,
+            "actual_peak_abs_deg_s": 19.30541853425777
+          },
+          "pitch": {
+            "status": "ok",
+            "lag_s": 0.0,
+            "xcorr_score": 0.4691814808129075,
+            "cmd_std_deg_s": 29.278536699729617,
+            "actual_std_deg_s": 9.149620726038428,
+            "cmd_peak_abs_deg_s": 42.36565500450884,
+            "actual_peak_abs_deg_s": 44.08427962071747
+          },
+          "yaw": {
+            "status": "low_excitation",
+            "cmd_std_deg_s": 1.7105539621701977,
+            "actual_std_deg_s": 2.867054922101709
+          }
+        }
+      }
+    },
+    {
+      "start_idx": 2344,
+      "end_idx": 2464,
+      "t_start": 27.491602182388306,
+      "t_end": 28.69129490852356,
+      "duration_observed_s": 1.199692726135254,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 3,
+      "phase_duration_s": 1.2,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 1.1998159885406494,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 2464,
+      "end_idx": 2525,
+      "t_start": 28.7000732421875,
+      "t_end": 29.299524307250977,
+      "duration_observed_s": 0.5994510650634766,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 3,
+      "phase_duration_s": 0.6,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 0.5995802879333496,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 2525,
+      "end_idx": 3025,
+      "t_start": 29.307956218719482,
+      "t_end": 34.2998833656311,
+      "duration_observed_s": 4.991927146911621,
+      "dim_code": 4,
+      "dim": "pitch",
+      "detail": 1,
+      "round": 0,
+      "phases_emitted": 4,
+      "phase_duration_s": 5.0,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 4.991965293884277,
+      "analysis": {
+        "rate_tracking": {
+          "roll": {
+            "status": "ok",
+            "lag_s": 0.0,
+            "xcorr_score": 0.384494568313622,
+            "cmd_std_deg_s": 29.162099906728287,
+            "actual_std_deg_s": 5.758342504364611,
+            "cmd_peak_abs_deg_s": 42.19201855423258,
+            "actual_peak_abs_deg_s": 21.7614689231727
+          },
+          "pitch": {
+            "status": "low_excitation",
+            "cmd_std_deg_s": 1.3685728559587635,
+            "actual_std_deg_s": 2.7772156176355685
+          },
+          "yaw": {
+            "status": "low_excitation",
+            "cmd_std_deg_s": 1.208203968064048,
+            "actual_std_deg_s": 2.7169977899408493
+          }
+        }
+      }
+    },
+    {
+      "start_idx": 3025,
+      "end_idx": 3146,
+      "t_start": 34.30809140205383,
+      "t_end": 35.508079290390015,
+      "duration_observed_s": 1.1999878883361816,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 4,
+      "phase_duration_s": 1.2,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 1.1999948024749756,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 3146,
+      "end_idx": 3205,
+      "t_start": 35.52459526062012,
+      "t_end": 36.10888195037842,
+      "duration_observed_s": 0.5842866897583008,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 4,
+      "phase_duration_s": 0.6,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 0.5843186378479004,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 3205,
+      "end_idx": 3705,
+      "t_start": 36.124738693237305,
+      "t_end": 41.1247124671936,
+      "duration_observed_s": 4.999973773956299,
+      "dim_code": 5,
+      "dim": "yaw",
+      "detail": 1,
+      "round": 0,
+      "phases_emitted": 5,
+      "phase_duration_s": 5.0,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 4.999977350234985,
+      "analysis": {
+        "rate_tracking": {
+          "roll": {
+            "status": "low_excitation",
+            "cmd_std_deg_s": 0.6297781324943631,
+            "actual_std_deg_s": 1.4417254505169612
+          },
+          "pitch": {
+            "status": "low_excitation",
+            "cmd_std_deg_s": 0.8005858726743645,
+            "actual_std_deg_s": 3.37749650926156
+          },
+          "yaw": {
+            "status": "ok",
+            "lag_s": 0.0,
+            "xcorr_score": 0.438547907926013,
+            "cmd_std_deg_s": 26.884519527849932,
+            "actual_std_deg_s": 2.668777556094669,
+            "cmd_peak_abs_deg_s": 45.47846291447853,
+            "actual_peak_abs_deg_s": 12.962364458996113
+          }
+        }
+      }
+    },
+    {
+      "start_idx": 3705,
+      "end_idx": 3826,
+      "t_start": 41.13306212425232,
+      "t_end": 42.33270454406738,
+      "duration_observed_s": 1.1996424198150635,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 5,
+      "phase_duration_s": 1.2,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 1.1997356414794922,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 3826,
+      "end_idx": 3886,
+      "t_start": 42.34129500389099,
+      "t_end": 42.93536853790283,
+      "duration_observed_s": 0.5940735340118408,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 5,
+      "phase_duration_s": 0.6,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 0.59407639503479,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 3886,
+      "end_idx": 4126,
+      "t_start": 42.944581031799316,
+      "t_end": 45.34207725524902,
+      "duration_observed_s": 2.397496223449707,
+      "dim_code": 7,
+      "dim": "latency",
+      "detail": 1,
+      "round": 0,
+      "phases_emitted": 6,
+      "phase_duration_s": 2.4,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 2.397576332092285,
+      "analysis": {
+        "note": "thrust step; a_z correlation not fit in this script but raw signals are saved in JSON for offline fitting."
+      }
+    },
+    {
+      "start_idx": 4126,
+      "end_idx": 4246,
+      "t_start": 45.34992289543152,
+      "t_end": 46.54933476448059,
+      "duration_observed_s": 1.1994118690490723,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 6,
+      "phase_duration_s": 1.2,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 1.1994788646697998,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 4246,
+      "end_idx": 4307,
+      "t_start": 46.55854344367981,
+      "t_end": 47.157758712768555,
+      "duration_observed_s": 0.5992152690887451,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 6,
+      "phase_duration_s": 0.6,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 0.5992486476898193,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 4307,
+      "end_idx": 4488,
+      "t_start": 47.17473340034485,
+      "t_end": 48.974409341812134,
+      "duration_observed_s": 1.7996759414672852,
+      "dim_code": 6,
+      "dim": "drag",
+      "detail": 1,
+      "round": 0,
+      "phases_emitted": 7,
+      "phase_duration_s": 1.8,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 1.7997112274169922,
+      "analysis": {
+        "drag_segment": {
+          "body_vx_mean_mps": -0.06258574380826293,
+          "body_vy_mean_mps": -0.5629882340635689,
+          "body_vz_mean_mps": 0.1239998546829017,
+          "body_speed_peak_mps": 1.332575405223216
+        }
+      }
+    },
+    {
+      "start_idx": 4488,
+      "end_idx": 4787,
+      "t_start": 48.98287343978882,
+      "t_end": 51.95788860321045,
+      "duration_observed_s": 2.975015163421631,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 7,
+      "phase_duration_s": 2.9876978706618447,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 2.97503399848938,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 4787,
+      "end_idx": 4848,
+      "t_start": 51.97482895851135,
+      "t_end": 52.57454180717468,
+      "duration_observed_s": 0.5997128486633301,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 7,
+      "phase_duration_s": 0.6,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 0.5998368263244629,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 4848,
+      "end_idx": 5008,
+      "t_start": 52.58271408081055,
+      "t_end": 54.17477369308472,
+      "duration_observed_s": 1.59205961227417,
+      "dim_code": 8,
+      "dim": "gate_bias",
+      "detail": 1,
+      "round": 0,
+      "phases_emitted": 8,
+      "phase_duration_s": 1.6,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 1.5918974876403809,
+      "analysis": {
+        "note": "gate flyby data present"
+      }
+    },
+    {
+      "start_idx": 5008,
+      "end_idx": 5299,
+      "t_start": 54.18303632736206,
+      "t_end": 57.091334104537964,
+      "duration_observed_s": 2.9082977771759033,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 8,
+      "phase_duration_s": 2.9152419190639707,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 2.9084789752960205,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 5299,
+      "end_idx": 5359,
+      "t_start": 57.099066972732544,
+      "t_end": 57.690802335739136,
+      "duration_observed_s": 0.5917353630065918,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 8,
+      "phase_duration_s": 0.6,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 0.5917983055114746,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 5359,
+      "end_idx": 7858,
+      "t_start": 57.69950532913208,
+      "t_end": 82.69919610023499,
+      "duration_observed_s": 24.999690771102905,
+      "dim_code": 1,
+      "dim": "mass",
+      "detail": 2,
+      "round": 0,
+      "phases_emitted": 9,
+      "phase_duration_s": 25.0,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 24.9997398853302,
+      "analysis": {
+        "stationary_noise_and_bias": {
+          "n_samples_obs": 2497,
+          "n_samples_odom_still": 2498,
+          "obs_lin_vel_mean_mps": [
+            -0.008844875424237626,
+            -0.0023295768564801787,
+            0.0014259380314527493
+          ],
+          "obs_lin_vel_std_mps": [
+            0.008231690911824258,
+            0.0037661531376829848,
+            0.0037552989774648575
+          ],
+          "odom_lin_vel_mean_mps": [
+            -0.008840872374533588,
+            -0.0023290272871618733,
+            0.0014258704857455628
+          ],
+          "altitude_mean_m": 0.04556710949910711,
+          "world_speed_max_mps": 0.045323219271765455
+        }
+      }
+    },
+    {
+      "start_idx": 7858,
+      "end_idx": 7978,
+      "t_start": 82.70761752128601,
+      "t_end": 83.89920568466187,
+      "duration_observed_s": 1.1915881633758545,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 9,
+      "phase_duration_s": 1.2,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 1.1916193962097168,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 7978,
+      "end_idx": 8038,
+      "t_start": 83.90775394439697,
+      "t_end": 84.50012636184692,
+      "duration_observed_s": 0.5923724174499512,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 9,
+      "phase_duration_s": 0.6,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 0.5923800468444824,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    },
+    {
+      "start_idx": 8038,
+      "end_idx": 9819,
+      "t_start": 84.50784111022949,
+      "t_end": 102.34082126617432,
+      "duration_observed_s": 17.832980155944824,
+      "dim_code": 2,
+      "dim": "vert",
+      "detail": 2,
+      "round": 0,
+      "phases_emitted": 10,
+      "phase_duration_s": 20.0,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 17.832956314086914,
+      "analysis": {
+        "vertical_excitation": {
+          "thrust_n_mean": 0.303900180683941,
+          "thrust_n_std": 0.21877531189722751,
+          "vz_std_mps": 0.32023425394361277,
+          "vz_peak_abs_mps": 1.3920566034723645
+        }
+      }
+    },
+    {
+      "start_idx": 9819,
+      "end_idx": 13516,
+      "t_start": 102.34899306297302,
+      "t_end": 139.3497929573059,
+      "duration_observed_s": 37.000799894332886,
+      "dim_code": 9,
+      "dim": "aux",
+      "detail": 0,
+      "round": 0,
+      "phases_emitted": 0,
+      "phase_duration_s": 0.0,
+      "aborted_at_start": false,
+      "aborted_during": false,
+      "t_in_phase_first": 0.0,
+      "t_in_phase_last": 0.0,
+      "analysis": {
+        "note": "transit / settle / post-abort hover \u2014 not a probe"
+      }
+    }
+  ],
+  "ground_idle_5s": {
+    "n_samples_obs": 99,
+    "n_samples_odom_still": 501,
+    "obs_lin_vel_mean_mps": [
+      0.0010081231171558656,
+      -0.0006243660078186161,
+      -8.274653796360961e-07
+    ],
+    "obs_lin_vel_std_mps": [
+      0.005000530808948615,
+      0.002692127125523478,
+      0.002855081004326291
+    ],
+    "odom_lin_vel_mean_mps": [
+      0.00020934849101191794,
+      -0.00015756567530338732,
+      1.2699875269523334e-05
+    ],
+    "altitude_mean_m": 0.03679200554496443,
+    "world_speed_max_mps": 0.02116571388615132
+  },
+  "hover_mass_fits": [],
+  "rate_tracking_pre_abort": {
+    "roll": {
+      "status": "ok",
+      "lag_s": 0.06,
+      "xcorr_score": 0.2817048141836646,
+      "cmd_std_deg_s": 17.756508983462314,
+      "actual_std_deg_s": 44.040601903958716,
+      "cmd_peak_abs_deg_s": 197.50619239271242,
+      "actual_peak_abs_deg_s": 1425.5684083565227
+    },
+    "pitch": {
+      "status": "ok",
+      "lag_s": 0.07,
+      "xcorr_score": 0.3139507221449577,
+      "cmd_std_deg_s": 16.496209982472703,
+      "actual_std_deg_s": 29.071686999753897,
+      "cmd_peak_abs_deg_s": 192.31201503410205,
+      "actual_peak_abs_deg_s": 677.5321795202997
+    },
+    "yaw": {
+      "status": "ok",
+      "lag_s": 0.09,
+      "xcorr_score": 0.6062067101818733,
+      "cmd_std_deg_s": 23.064737847002196,
+      "actual_std_deg_s": 20.643950159559353,
+      "cmd_peak_abs_deg_s": 115.11277481506934,
+      "actual_peak_abs_deg_s": 350.0104050185421
+    }
+  },
+  "twr_fit_pre_abort": null
+}
