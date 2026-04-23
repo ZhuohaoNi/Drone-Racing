@@ -1,0 +1,176 @@
+rosbag2_bagfile_information:
+  version: 9
+  storage_identifier: mcap
+  duration:
+    nanoseconds: 44644883280
+  starting_time:
+    nanoseconds_since_epoch: 1776889508497022780
+  message_count: 27138
+  topics_with_message_count:
+    - topic_metadata:
+        name: /crazy_jirl_b5/observations
+        type: jirl_interfaces/msg/Observations
+        serialization_format: cdr
+        offered_qos_profiles:
+          - history: unknown
+            depth: 0
+            reliability: best_effort
+            durability: volatile
+            deadline:
+              sec: 9223372036
+              nsec: 854775807
+            lifespan:
+              sec: 9223372036
+              nsec: 854775807
+            liveliness: automatic
+            liveliness_lease_duration:
+              sec: 9223372036
+              nsec: 854775807
+            avoid_ros_namespace_conventions: false
+        type_description_hash: RIHS01_8685cfe858862d5badea4992c4f3668066992c43dd042dc56cbb9cfb65274365
+      message_count: 3746
+    - topic_metadata:
+        name: /crazy_jirl_b5/trajectory
+        type: jirl_interfaces/msg/Trajectory
+        serialization_format: cdr
+        offered_qos_profiles:
+          - history: unknown
+            depth: 0
+            reliability: best_effort
+            durability: volatile
+            deadline:
+              sec: 9223372036
+              nsec: 854775807
+            lifespan:
+              sec: 9223372036
+              nsec: 854775807
+            liveliness: automatic
+            liveliness_lease_duration:
+              sec: 9223372036
+              nsec: 854775807
+            avoid_ros_namespace_conventions: false
+        type_description_hash: RIHS01_a1bac8fb4ddf71c2ae0b90e193bffb6c013efd1fef183873ca545ee63f3b0b5f
+      message_count: 0
+    - topic_metadata:
+        name: /ctbr_cmd
+        type: jirl_interfaces/msg/CommandCTBR
+        serialization_format: cdr
+        offered_qos_profiles:
+          - history: unknown
+            depth: 0
+            reliability: best_effort
+            durability: volatile
+            deadline:
+              sec: 9223372036
+              nsec: 854775807
+            lifespan:
+              sec: 9223372036
+              nsec: 854775807
+            liveliness: automatic
+            liveliness_lease_duration:
+              sec: 9223372036
+              nsec: 854775807
+            avoid_ros_namespace_conventions: false
+        type_description_hash: RIHS01_da857069d4a74f31a6c3d1a857c6d8d5e5cc8817045cf013d7ad62ff77299180
+      message_count: 3746
+    - topic_metadata:
+        name: /tf
+        type: tf2_msgs/msg/TFMessage
+        serialization_format: cdr
+        offered_qos_profiles:
+          - history: unknown
+            depth: 0
+            reliability: reliable
+            durability: volatile
+            deadline:
+              sec: 9223372036
+              nsec: 854775807
+            lifespan:
+              sec: 9223372036
+              nsec: 854775807
+            liveliness: automatic
+            liveliness_lease_duration:
+              sec: 9223372036
+              nsec: 854775807
+            avoid_ros_namespace_conventions: false
+        type_description_hash: RIHS01_e369d0f05a23ae52508854b66f6aa0437f3449d652e8cbf22d5abe85d020f087
+      message_count: 5358
+    - topic_metadata:
+        name: /crazy_jirl_b5/odom
+        type: nav_msgs/msg/Odometry
+        serialization_format: cdr
+        offered_qos_profiles:
+          - history: unknown
+            depth: 0
+            reliability: reliable
+            durability: volatile
+            deadline:
+              sec: 9223372036
+              nsec: 854775807
+            lifespan:
+              sec: 9223372036
+              nsec: 854775807
+            liveliness: automatic
+            liveliness_lease_duration:
+              sec: 9223372036
+              nsec: 854775807
+            avoid_ros_namespace_conventions: false
+        type_description_hash: RIHS01_3cc97dc7fb7502f8714462c526d369e35b603cfc34d946e3f2eda2766dfec6e0
+      message_count: 4465
+    - topic_metadata:
+        name: /crazy_jirl_b5/pose
+        type: geometry_msgs/msg/PoseStamped
+        serialization_format: cdr
+        offered_qos_profiles:
+          - history: unknown
+            depth: 0
+            reliability: reliable
+            durability: volatile
+            deadline:
+              sec: 9223372036
+              nsec: 854775807
+            lifespan:
+              sec: 9223372036
+              nsec: 854775807
+            liveliness: automatic
+            liveliness_lease_duration:
+              sec: 9223372036
+              nsec: 854775807
+            avoid_ros_namespace_conventions: false
+        type_description_hash: RIHS01_10f3786d7d40fd2b54367835614bff85d4ad3b5dab62bf8bca0cc232d73b4cd8
+      message_count: 5358
+    - topic_metadata:
+        name: /multi_odometry
+        type: jirl_interfaces/msg/OdometryArray
+        serialization_format: cdr
+        offered_qos_profiles:
+          - history: unknown
+            depth: 0
+            reliability: reliable
+            durability: volatile
+            deadline:
+              sec: 9223372036
+              nsec: 854775807
+            lifespan:
+              sec: 9223372036
+              nsec: 854775807
+            liveliness: automatic
+            liveliness_lease_duration:
+              sec: 9223372036
+              nsec: 854775807
+            avoid_ros_namespace_conventions: false
+        type_description_hash: RIHS01_fba14b71cd2eb1bdb1ea6bdfafb6819c75e8208113ced516eeb350b725d5157e
+      message_count: 4465
+  compression_format: ""
+  compression_mode: ""
+  relative_file_paths:
+    - group30_powerloop-r1d1-gate3mask-fullswitch-twr1p87_0.mcap
+  files:
+    - path: group30_powerloop-r1d1-gate3mask-fullswitch-twr1p87_0.mcap
+      starting_time:
+        nanoseconds_since_epoch: 1776889508497022780
+      duration:
+        nanoseconds: 44644883280
+      message_count: 27138
+  custom_data: ~
+  ros_distro: jazzy

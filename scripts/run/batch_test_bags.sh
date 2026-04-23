@@ -5,16 +5,17 @@
 # prints/writes the metrics that matter for post-real-test comparison.
 #
 # Usage:
-#   scripts/run/batch_test_bags.sh <bag_root> [namespace] [num_laps]
+#   scripts/run/batch_test_bags.sh <bag_root> [namespace|auto] [num_laps]
 #
 # Examples:
 #   scripts/run/batch_test_bags.sh rosbags_powerloop_baseline_controller_04_20
-#   scripts/run/batch_test_bags.sh /abs/path/to/rosbags crazy_jirl_b3 3
+#   scripts/run/batch_test_bags.sh /abs/path/to/rosbags auto 3
+#   scripts/run/batch_test_bags.sh /abs/path/to/rosbags crazy_jirl_b5 3
 #   TRACK=circle scripts/run/batch_test_bags.sh rosbags crazy_jirl_b2 3
 set -eo pipefail
 
 BAG_ROOT_ARG="${1:?Usage: $0 <bag_root> [namespace] [num_laps]}"
-NAMESPACE="${2:-crazy_jirl_b3}"
+NAMESPACE="${2:-auto}"
 NUM_LAPS="${3:-3}"
 TRACK="${TRACK:-powerloop}"
 
@@ -87,6 +88,33 @@ fi
 
 IFS=$'\n' BAGS=($(sort -u <<<"${BAGS[*]}")); unset IFS
 
+detect_namespace() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+bag = Path(sys.argv[1])
+metadata = bag / "metadata.yaml" if bag.is_dir() else bag.parent / "metadata.yaml"
+if not metadata.exists():
+    raise SystemExit(1)
+
+text = metadata.read_text(errors="replace")
+odom_namespaces = re.findall(r"name:\s*/([^/\s]+)/odom\b", text)
+if odom_namespaces:
+    print(sorted(set(odom_namespaces))[0])
+    raise SystemExit(0)
+
+candidate_namespaces = re.findall(
+    r"name:\s*/([^/\s]+)/(?:pose|observations|trajectory)\b", text)
+if candidate_namespaces:
+    print(sorted(set(candidate_namespaces))[0])
+    raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
 echo "=== Batch bag test ==="
 echo "Root:      $BAG_ROOT"
 echo "Bags:      ${#BAGS[@]}"
@@ -104,7 +132,29 @@ for bag_path in "${BAGS[@]}"; do
   json_out="$TMPDIR_BATCH/${safe_name}.json"
 
   echo "--- Processing: $bag_name ---"
-  if ! python3 "$PROJECT/scripts/analysis/bag_ordered_metrics.py" "$bag_path" "$NAMESPACE" "$NUM_LAPS" \
+  bag_namespace="$NAMESPACE"
+  if [[ "$bag_namespace" == "auto" ]]; then
+    if ! bag_namespace=$(detect_namespace "$bag_path"); then
+      echo "  FAILED: could not auto-detect namespace from metadata.yaml"
+      python3 - "$CSV_OUT" "$bag_name" "$bag_path" <<'PY'
+import csv
+import sys
+
+csv_path, bag_name, bag_path = sys.argv[1:4]
+header = open(csv_path, newline="").readline().strip().split(",")
+row = {key: "" for key in header}
+row.update({"bag": bag_name, "status": "FAILED", "bag_path": bag_path})
+with open(csv_path, "a", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=header)
+    writer.writerow(row)
+PY
+      ((FAIL_COUNT++)) || true
+      continue
+    fi
+    echo "  Namespace: $bag_namespace"
+  fi
+
+  if ! python3 "$PROJECT/scripts/analysis/bag_ordered_metrics.py" "$bag_path" "$bag_namespace" "$NUM_LAPS" \
       --track "$TRACK" \
       --sim2real-repo "$REPO" \
       --summary-json "$json_out" \

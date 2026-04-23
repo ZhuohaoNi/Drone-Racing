@@ -2,7 +2,7 @@
 # Run bag analysis + lap-time computation on a recorded rosbag.
 #
 # Usage:
-#   scripts/run/test_bag.sh <bag_name_or_path> [namespace] [num_laps]
+#   scripts/run/test_bag.sh <bag_name_or_path> [namespace|auto] [num_laps]
 #
 # Defaults to real powerloop bag coordinates. Use TRACK=circle for old circle
 # bags, TRACK=powerloop_sim for sim-frame powerloop bags, or TRACK=config to
@@ -10,13 +10,14 @@
 #
 # Examples:
 #   scripts/run/test_bag.sh group30_cyclev2
-#   scripts/run/test_bag.sh group30_cyclev3 crazy_jirl_b3 3
+#   scripts/run/test_bag.sh group30_cyclev3 auto 3
+#   scripts/run/test_bag.sh group30_cyclev3 crazy_jirl_b5 3
 #   scripts/run/test_bag.sh /abs/path/to/some_bag crazy_jirl_b2
 #   TRACK=circle scripts/run/test_bag.sh group30_cyclev2
 set -eo pipefail
 
 BAG_ARG="${1:?Usage: $0 <bag_name_or_path> [namespace] [num_laps]}"
-NAMESPACE="${2:-crazy_jirl_b3}"
+NAMESPACE="${2:-auto}"
 NUM_LAPS="${3:-3}"
 TRACK="${TRACK:-powerloop}"
 
@@ -62,6 +63,40 @@ source /opt/ros/jazzy/setup.sh
 source "$REPO/install/setup.sh"
 
 cd "$REPO"
+
+detect_namespace() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+bag = Path(sys.argv[1])
+metadata = bag / "metadata.yaml" if bag.is_dir() else bag.parent / "metadata.yaml"
+if not metadata.exists():
+    raise SystemExit(1)
+
+text = metadata.read_text(errors="replace")
+odom_namespaces = re.findall(r"name:\s*/([^/\s]+)/odom\b", text)
+if odom_namespaces:
+    print(sorted(set(odom_namespaces))[0])
+    raise SystemExit(0)
+
+candidate_namespaces = re.findall(
+    r"name:\s*/([^/\s]+)/(?:pose|observations|trajectory)\b", text)
+if candidate_namespaces:
+    print(sorted(set(candidate_namespaces))[0])
+    raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
+if [[ "$NAMESPACE" == "auto" ]]; then
+  if ! NAMESPACE=$(detect_namespace "$BAG_PATH"); then
+    echo "Could not auto-detect namespace from metadata.yaml. Pass it explicitly, e.g. crazy_jirl_b5." >&2
+    exit 1
+  fi
+fi
 
 echo "=== Bag:       $BAG_PATH"
 echo "=== Namespace: $NAMESPACE"
