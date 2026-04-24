@@ -107,6 +107,41 @@ None of the above is a 2× error. Most are 10–30 % mismatches that DR can abso
 
 ---
 
+## Suggested DR patch — upfront summary
+
+Full audit in §6. TL;DR of what the `Powerloop Fullswitch Real-Effective TWR` baseline (`scripts/run/train_powerloop_fullswitch_real_twr.sh`) covers vs what the 04-22 bags say it should cover:
+
+**Already covered correctly:** nominal `thrust_to_weight = 1.87`, aero DR `0.5–2.0`, PID-gain DR (`kpki ±15 %`, `kd ±30 %`), `mass_variation` and `motor_tau` explicitly OFF pending sysid.
+
+**Gaps, in priority order:**
+
+| # | Gap | Evidence | Suggested patch |
+|---|---|---|---|
+| 1 | TWR band too tight on the low-mass side | `b5` at 58.7 g → real TWR 2.04, outside current [1.76, 1.98] | `twr_randomization_pct: 0.06 → 0.10` |
+| 2 | Action-latency window too narrow | Measured rate-tracking lag 60–70 ms vs ~20 ms sim coverage | `action_latency_max: 2 → 6` (optionally `fixed_action_delay_steps: 4`) |
+| 3 | Rate-loop overshoot not reproduced | 99th-pct roll rate 159 °/s vs cmd cap 100 °/s (+59 %) | Turn on `motor_tau_scale: 0.8–1.2` *after* fitting 04-20 sysid bag |
+| 4 | PWM-map mismatch has zero DR | Linear `2.349e-5·PWM − 0.2349` in sim and deploy; 04-16 quadratic unmerged | Add PWM-nonlinearity DR, or lock one map pre-race |
+| 5 | Yaw authority asymmetry not modelled | Real yaw 165 °/s vs cmd cap 200 °/s | Per-axis rate-gain DR (yaw 0.6–1.0, roll/pitch 0.9–1.1) |
+| 6 | Orientation DR is per-track | 04-22 stays inside ±60° roll; 04-20 inverted needed ±170° | Confirm 04-28 track; keep nominal DR for planar figure-8 |
+
+**Safe to ship now:** #1 and #2 — both are direct sim-side adjustments with no new sysid dependency.
+**Needs sysid fit first:** #3 (motor-τ) depends on `rosbags_powerloop_baseline_controller_04_20/sysid/group30_sysid_0.mcap`.
+**Binary decision before 04-28:** #4 (PWM map) — must be consistent between training and deployment.
+**Not a DR issue:** 74 % bang-bang thrust is a reward-shape artefact post-mass-fix; fix via `thrust_rate_smoothness` reward term (§5.4), not DR.
+
+Concrete diff to `ENV_OVERRIDES` in the baseline script:
+
+```diff
+- "twr_randomization_pct":0.06,
++ "twr_randomization_pct":0.10,
+- "action_latency_max":2,
++ "action_latency_max":6,
+- "motor_tau_scale_min":1.0,"motor_tau_scale_max":1.0,
++ "motor_tau_scale_min":0.8,"motor_tau_scale_max":1.2,   // ONLY after sysid fit
+```
+
+---
+
 ## 1. Methodology
 
 Identical pipeline to the 04-20 analysis. All three bags were processed with `sim2real/bin/analyze_rosbag.py`, emitting the standard set of `<ns>_*.json` artefacts per bag (see `docs/ros_bags_fields.md` for the field list). We re-extracted the following quantities for cross-session comparison:
@@ -295,7 +330,75 @@ The `speedv4` bag missed `/ctbr_cmd`. Validate the recording script captures all
 
 ---
 
-## 6. Files
+## 6. DR Coverage Audit — Baseline `Powerloop Fullswitch Real-Effective TWR` Candidate
+
+Cross-checking the baseline training script `scripts/run/train_powerloop_fullswitch_real_twr.sh` (changelog entry "Powerloop Fullswitch Real-Effective TWR Candidate", 2026-04-22) against the sysid findings above. The current `ENV_OVERRIDES` blob is:
+
+```json
+{"track_name":"powerloop","thrust_to_weight":1.87,"twr_randomization_pct":0.06,
+ "mass_variation":0.0,"action_latency_max":2,"fixed_action_delay_steps":-1,
+ "motor_tau_scale_min":1.0,"motor_tau_scale_max":1.0,
+ "aero_randomization_scale_min":0.5,"aero_randomization_scale_max":2.0,
+ "pid_kpki_randomization_pct":0.15,"pid_kd_randomization_pct":0.30, ...}
+```
+
+### 6.1 What the baseline DOES cover
+
+| DR knob | Baseline value | Backed by 04-22 analysis? |
+|---|---|---|
+| `thrust_to_weight = 1.87` | nominal | ✔ matches 04-20 pool (63.3 g → 1.89 TWR). Closed the ~2× mass gap — confirmed by the 19 % lap-time win. |
+| `twr_randomization_pct = 0.06` | ±6 % → TWR ∈ [1.76, 1.98] | ✱ partially. 04-22 `b5` identified mass 58.7 g → real TWR **2.04**, just outside this window. |
+| `aero_randomization_scale = 0.5–2.0` | wide | ✔ ample; nothing in the bags argues against. |
+| `pid_kpki_pct = 0.15`, `pid_kd_pct = 0.30` | on | ✔ present, but see rate-loop gap (§6.2.3) below. |
+| `action_latency_max = 2` steps | on | ✱ ~20 ms coverage; measured lag 60–70 ms. Under-covers. |
+| `mass_variation = 0.0`, `motor_tau = 1.0/1.0` | **OFF by design** | ✔ consistent with the stated "wait for clean sysid bag" posture. |
+
+### 6.2 What the 04-22 analysis says is NOT covered (in priority order)
+
+#### 6.2.1 TWR lower bound is too tight for the `b5` drone
+
+Pooled real TWR spread is 1.82 → 2.04 across 3 sessions / 2 drones. Current ±6 % DR is [1.76, 1.98]. Either re-centre the nominal at 1.95 (≈ 60 g) or widen to **±10 %** ([1.68, 2.06]) to bracket both drones without retraining per-drone.
+
+#### 6.2.2 PWM-map mismatch — zero coverage
+
+Linear `2.349e-5·PWM − 0.2349` is baked into both sim and deployment; the 04-16 calibrated quadratic is still unmerged. If race-day switches to the quadratic map, sim has no randomization over thrust nonlinearity. Mitigation: add a PWM→thrust nonlinearity DR (e.g. quadratic coefficient drawn in a band around `±1·a_calib`) so the policy becomes map-agnostic. Binary alternative: enforce one map pre-race and rely on the sim-side decision.
+
+#### 6.2.3 Rate-loop overshoot — not reproduced in sim
+
+Measured 99th-pct roll rate **159 °/s** vs commanded cap **100 °/s** (+59 %). The baseline randomizes PID *gains* only, which shifts the rate-loop pole location but does not explicitly expose the policy to overshoot-dominated responses. Two cheap additions:
+- turn on `motor_tau_scale` DR (e.g. `0.7–1.3`) once the 04-20 sysid bag is fit; the 60–70 ms lag is consistent with a motor-τ contribution;
+- optionally widen `pid_kpki_pct` asymmetrically upward to allow higher-gain rate loops that produce overshoot.
+
+#### 6.2.4 Action-latency window too narrow
+
+`action_latency_max = 2` steps ≈ 20 ms; real end-to-end rate-tracking lag is 60–70 ms. Raise `action_latency_max` to **6–8 steps** and/or set a non-default `fixed_action_delay_steps` to cover the median lag for deterministic A/B comparisons.
+
+#### 6.2.5 Yaw authority asymmetry — not modelled
+
+Real yaw peaks 165 °/s vs cmd cap 200 °/s (under-actuated, consistent with +-config Crazyflie physics). Sim likely delivers full yaw authority at the cap. If `QuadcopterEnvCfg` exposes a per-axis rate-gain scale, randomize yaw separately (e.g. 0.6–1.0 on yaw, 0.9–1.1 on roll/pitch).
+
+#### 6.2.6 Track-orientation DR should be per-track
+
+04-22 planar figure-8 stays inside ±60° roll; the wide-roll DR extension flagged for the 04-20 inverted loop is **not needed** here. Current baseline does not force wide-roll, so it is fine for 04-22 — but before 04-28 confirm which physical track will be used and toggle accordingly.
+
+#### 6.2.7 Out of DR scope but flagged
+
+74 % bang-bang thrust is now a reward-shape artefact post-mass-fix, not a dynamics gap. Fix with a `thrust_rate_smoothness` reward term (Priority-3 in §5.4), not DR.
+
+### 6.3 Concrete minimal patch to the baseline script
+
+Suggested edits to `ENV_OVERRIDES` in `scripts/run/train_powerloop_fullswitch_real_twr.sh`:
+
+- `twr_randomization_pct`: `0.06 → 0.10`
+- `action_latency_max`: `2 → 6` (and optionally `fixed_action_delay_steps: 4` for a deterministic-lag A/B)
+- `motor_tau_scale_min/max`: `1.0/1.0 → 0.8/1.2` — **only after** `rosbags_powerloop_baseline_controller_04_20/sysid/group30_sysid_0.mcap` is fit; otherwise this is a guess
+- Add PWM-map quadratic-coefficient DR if the env supports it; otherwise resolve the map decision (§5.2) before 04-28 instead.
+
+Items 6.2.1 and 6.2.4 are safe to ship now; 6.2.2, 6.2.3, 6.2.5 depend on the sysid-bag fit and on whether the matching knobs exist in `QuadcopterEnvCfg`.
+
+---
+
+## 7. Files
 
 - `plots/group30_powerloop-r1d1-gate3mask-fullswitch-twr1p87/crazy_jirl_b5_*.json` — reference bag, full pipeline output.
 - `plots/group30_powerloop-r1d1-gate3mask-fullswitch-twr1p87-speedv2-postloopvel/crazy_jirl_b5_*.json` — tumbled variant, useful as failure-mode evidence only.
