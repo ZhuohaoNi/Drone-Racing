@@ -144,8 +144,6 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     use_spline_reset = False        # fixed baseline: rely on replay + ground + linear interp resets
     spline_vel_min = 0.5            # only used when use_spline_reset=True
     spline_vel_max = 1.5
-    linear_reset_vel_min = 0.0      # optional velocity for non-spline linear fallback resets
-    linear_reset_vel_max = 0.0
     replay_reset_ratio = 0.3        # baseline cache replay ratio; D1 can stage this in over training
     ground_reset_ratio = 0.2        # baseline ground-start coverage
     staged_replay_reset = False     # baseline keeps replay always-on; D1 enables Song-style warmup
@@ -402,8 +400,6 @@ class QuadcopterEnv(DirectRLEnv):
 
         # Initialize other state variables
         self._pose_drone_wrt_gate = torch.zeros(self.num_envs, 3, device=self.device)
-        self._prev_pose_drone_wrt_gate = torch.zeros(self.num_envs, 3, device=self.device)
-        self._prev_pose_drone_wrt_gate[:, 0] = 1.0
         self._prev_x_drone_wrt_gate = torch.ones(self.num_envs, device=self.device)
         self._initial_wp = 0
         self._n_run = 0

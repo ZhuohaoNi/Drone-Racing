@@ -7,6 +7,11 @@
 #   - thrust_to_weight = 1.87
 #   - no extra motor-tau/drag changes
 #
+# Eval-specific controller-match notes:
+#   - target switching should behave like the deployed controller, so disable
+#     the sim-only Gate 3 approach gate and previous-gate backtrack kill
+#   - keep the rest of the real-effective dynamics unchanged
+#
 # Usage:
 #   ./scripts/run/eval_powerloop_real_twr.sh <run_dir> [checkpoint] [num_envs] [follow_robot]
 
@@ -23,7 +28,21 @@ conda activate ese6510
 cd "$(dirname "$0")/../.."
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
-ENV_OVERRIDES='{"track_name":"powerloop","thrust_to_weight":1.87,"twr_randomization_pct":0.0,"mass_variation":0.0,"action_latency_max":2,"fixed_action_delay_steps":-1,"motor_tau_scale_min":1.0,"motor_tau_scale_max":1.0}'
+# make usre backtrack_check_enabled is False
+ENV_OVERRIDES='{"track_name":"powerloop","thrust_to_weight":1.87,"twr_randomization_pct":0.0,"mass_variation":0.0,"action_latency_max":2,"fixed_action_delay_steps":-1,"motor_tau_scale_min":1.0,"motor_tau_scale_max":1.0,"approach_x_threshold":0.0,"backtrack_check_enabled":false}'
+if [[ -n "${EXTRA_ENV_OVERRIDES:-}" ]]; then
+    ENV_OVERRIDES=$(
+        ENV_OVERRIDES="$ENV_OVERRIDES" EXTRA_ENV_OVERRIDES="$EXTRA_ENV_OVERRIDES" python - <<'PY'
+import json
+import os
+
+base = json.loads(os.environ["ENV_OVERRIDES"])
+extra = json.loads(os.environ["EXTRA_ENV_OVERRIDES"])
+base.update(extra)
+print(json.dumps(base, separators=(",", ":")))
+PY
+    )
+fi
 
 if [ "$NUM_ENVS" -eq 1 ]; then
     echo "========================================"

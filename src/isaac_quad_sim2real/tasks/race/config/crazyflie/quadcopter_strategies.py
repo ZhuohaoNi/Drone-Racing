@@ -699,7 +699,6 @@ class CircleQuadcopterStrategy:
                 for key in [
                     "gate_pass",
                     "progress_goal",
-                    "vel_toward_gate",
                     "lap_complete",
                     "lap_incomplete",
                     "cmd_reg",
@@ -1067,20 +1066,11 @@ class CircleQuadcopterStrategy:
         # 2. shaping / gate-pass bonus still uses the inner virtual opening.
         switch_gate_half_side = 0.5
         reward_gate_half_side = gate_side / 2.0
-        curr_pose = self.env._pose_drone_wrt_gate
-        prev_pose = self.env._prev_pose_drone_wrt_gate
-        curr_x = curr_pose[:, 0]
-        prev_x = prev_pose[:, 0]
-
-        # Check the actual x=0 plane-crossing point, not the post-crossing sample.
-        # At racing speeds the sampled pose can already be slightly outside the
-        # gate window even when the segment crossed through the physical opening.
-        denom = prev_x - curr_x
-        denom = torch.where(denom.abs() < 1e-6, torch.full_like(denom, 1e-6), denom)
-        cross_alpha = (prev_x / denom).clamp(0.0, 1.0)
-        gate_y = prev_pose[:, 1] + cross_alpha * (curr_pose[:, 1] - prev_pose[:, 1])
-        gate_z = prev_pose[:, 2] + cross_alpha * (curr_pose[:, 2] - prev_pose[:, 2])
-        dist_to_gate = torch.sqrt(gate_y.square() + gate_z.square())
+        dist_to_gate = torch.linalg.norm(self.env._pose_drone_wrt_gate, dim=1)
+        curr_x = self.env._pose_drone_wrt_gate[:, 0]
+        prev_x = self.env._prev_x_drone_wrt_gate
+        gate_y = self.env._pose_drone_wrt_gate[:, 1]
+        gate_z = self.env._pose_drone_wrt_gate[:, 2]
         within_switch_bounds = (gate_y.abs() < switch_gate_half_side) & (gate_z.abs() < switch_gate_half_side)
         within_reward_bounds = (gate_y.abs() < reward_gate_half_side) & (gate_z.abs() < reward_gate_half_side)
         crossed_plane = (prev_x > 0.0) & (curr_x <= 0.0)
@@ -1092,7 +1082,7 @@ class CircleQuadcopterStrategy:
             self._max_x_since_gate_change, curr_x
         )
         approach_valid = torch.ones_like(curr_x, dtype=torch.bool)
-        if self.cfg.is_train and self.cfg.track_name == "powerloop":
+        if self.cfg.track_name == "powerloop":
             gate3_mask = self.env._idx_wp == 3
             approach_valid[gate3_mask] = (
                 self._max_x_since_gate_change[gate3_mask] > self._approach_x_threshold
@@ -1117,7 +1107,6 @@ class CircleQuadcopterStrategy:
         self.env._idx_wp[ids_gate_switched] = (self.env._idx_wp[ids_gate_switched] + 1) % num_gates
         self.env._n_gates_passed[ids_gate_switched] += 1
         self.env._desired_pos_w[ids_gate_switched] = self.env._waypoints[self.env._idx_wp[ids_gate_switched], :3]
-        self.env._prev_pose_drone_wrt_gate = curr_pose.clone()
         self.env._prev_x_drone_wrt_gate = curr_x.clone()
         if len(ids_gate_switched) > 0:
             new_pose, _ = subtract_frame_transforms(
@@ -1125,7 +1114,6 @@ class CircleQuadcopterStrategy:
                 self.env._waypoints_quat[self.env._idx_wp[ids_gate_switched], :],
                 self.env._robot.data.root_link_pos_w[ids_gate_switched]
             )
-            self.env._prev_pose_drone_wrt_gate[ids_gate_switched] = new_pose
             self.env._prev_x_drone_wrt_gate[ids_gate_switched] = new_pose[:, 0]
             # Reset approach buffer to the new gate's frame x at transition
             # moment — next step's max() starts fresh for the new target.
@@ -1231,67 +1219,17 @@ class CircleQuadcopterStrategy:
                                               dtype=self.env._idx_wp.dtype)
                 loop_mask = (self.env._idx_wp.unsqueeze(-1) == skip_tensor).any(dim=-1)
                 r_progress = torch.where(loop_mask, torch.zeros_like(r_progress), r_progress)
-
-            vel_scale = float(self.env.rew.get("vel_toward_gate_reward_scale", 0.0))
-            r_vel = torch.zeros_like(r_progress)
-            if vel_scale != 0.0:
-                drone_vel_w = self.env._robot.data.root_com_lin_vel_w
-                drone_pos_w = self.env._robot.data.root_link_pos_w
-
-                direction_to_current = self.env._desired_pos_w - drone_pos_w
-                direction_to_current = direction_to_current / (
-                    torch.linalg.norm(direction_to_current, dim=1, keepdim=True) + 1e-8
-                )
-                clamp_min = float(self.env.rew.get("vel_reward_clamp_min", -2.0))
-                clamp_max = float(self.env.rew.get("vel_reward_clamp_max", 8.0))
-                vel_current = torch.sum(drone_vel_w * direction_to_current, dim=1).clamp(
-                    clamp_min, clamp_max
-                )
-
-                next_idx = (self.env._idx_wp + 1) % num_gates
-                next_pos_w = self.env._waypoints[next_idx, :3]
-                direction_to_next = next_pos_w - drone_pos_w
-                direction_to_next = direction_to_next / (
-                    torch.linalg.norm(direction_to_next, dim=1, keepdim=True) + 1e-8
-                )
-                vel_next = torch.sum(drone_vel_w * direction_to_next, dim=1).clamp(
-                    clamp_min, clamp_max
-                )
-
-                next_weight = float(self.env.rew.get("vel_reward_next_weight", 3.0 / 8.0))
-                next_weight = min(max(next_weight, 0.0), 1.0)
-                vel_toward_gate = (1.0 - next_weight) * vel_current + next_weight * vel_next
-
-                vel_idx = self.env.rew.get("vel_reward_gate_indices", None)
-                if vel_idx is not None:
-                    vel_tensor = torch.as_tensor(list(vel_idx), device=self.device,
-                                                 dtype=self.env._idx_wp.dtype)
-                    if vel_tensor.numel() > 0:
-                        vel_mask = (self.env._idx_wp.unsqueeze(-1) == vel_tensor).any(dim=-1)
-                    else:
-                        vel_mask = torch.zeros_like(self.env._idx_wp, dtype=torch.bool)
-                else:
-                    # Match the stable old powerloop convention if only the scale is set:
-                    # do not bias the active loop gate itself.
-                    vel_mask = self.env._idx_wp != 3
-
-                min_gates_passed = int(self.env.rew.get("vel_reward_min_gates_passed", 0))
-                if min_gates_passed > 0:
-                    vel_mask = vel_mask & (self.env._n_gates_passed >= min_gates_passed)
-                r_vel = torch.where(vel_mask, vel_toward_gate * vel_scale, r_vel)
-
             r_gate = gate_pass * self.env.rew['gate_pass_reward_scale']
             r_lap_incomplete = self.env.rew['lap_incomplete_penalty_scale']  # constant per-step cost
             r_crash = contact_penalty * self.env.rew['crash_contact_scale']
 
-            reward = r_progress + r_vel + r_gate + lap_bonus + r_lap_incomplete + cmd_reg + cmd_smoothness + r_crash
+            reward = r_progress + r_gate + lap_bonus + r_lap_incomplete + cmd_reg + cmd_smoothness + r_crash
 
             # Death cost override on terminal episodes
             reward = torch.where(self.env.reset_terminated,
                                  torch.ones_like(reward) * self.env.rew['death_cost'], reward)
 
             self._episode_sums["progress_goal"] += r_progress
-            self._episode_sums["vel_toward_gate"] += r_vel
             self._episode_sums["gate_pass"] += r_gate
             self._episode_sums["lap_complete"] += lap_bonus
             self._episode_sums["lap_incomplete"] += r_lap_incomplete
@@ -1592,18 +1530,6 @@ class CircleQuadcopterStrategy:
             default_root_state[:, 2] = initial_z
             default_root_state[:, 7:] = 0.0
 
-            # Optional real-style fallback velocity. The original fallback reset
-            # spawned mid-air with zero velocity, which is unlike race flight.
-            # Keep it off by default; enable via linear_reset_vel_max > 0.
-            vel_min = max(0.0, float(getattr(self.cfg, "linear_reset_vel_min", 0.0)))
-            vel_max = max(0.0, float(getattr(self.cfg, "linear_reset_vel_max", 0.0)))
-            if vel_max > 0.0:
-                vel_min = min(vel_min, vel_max)
-                target_vec = next_gate_pos - default_root_state[:, 0:3]
-                target_dir = target_vec / (torch.linalg.norm(target_vec, dim=1, keepdim=True) + 1e-8)
-                speed = torch.empty(n_reset, device=self.device).uniform_(vel_min, vel_max)
-                default_root_state[:, 7:10] = target_dir * speed.unsqueeze(1)
-
             initial_yaw = torch.atan2(y0_wp - initial_y, x0_wp - initial_x)
             yaw_noise = torch.empty(n_reset, device=self.device).uniform_(-0.3, 0.3)
             target_gate_idx = next_wp_indices.clone()
@@ -1703,8 +1629,6 @@ class CircleQuadcopterStrategy:
             self.env._desired_pos_w[env_ids] - self.env._robot.data.root_link_pos_w[env_ids], dim=1
         )
 
-        self.env._prev_pose_drone_wrt_gate[env_ids] = self.env._pose_drone_wrt_gate[env_ids]
-        self.env._prev_pose_drone_wrt_gate[env_ids, 0] = 1.0
         self.env._prev_x_drone_wrt_gate[env_ids] = 1.0
         # Reset approach buffer to actual spawn x in current gate frame so the
         # approach gating reflects the real post-reset geometry (replay resets

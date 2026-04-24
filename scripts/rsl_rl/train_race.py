@@ -81,6 +81,20 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
 
+def apply_env_overrides(env_cfg, env_overrides):
+    """Apply flat or dotted env overrides.
+
+    Keep `gate_side` as a convenience alias for `gate_model.gate_side`.
+    Baseline behavior is unchanged unless that override is explicitly used.
+    """
+    for key, value in env_overrides.items():
+        parts = ["gate_model", "gate_side"] if key == "gate_side" else key.split(".")
+        target = env_cfg
+        for part in parts[:-1]:
+            target = getattr(target, part)
+        setattr(target, parts[-1], value)
+
+
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     """Train with RSL-RL agent."""
@@ -122,7 +136,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     crash_reward_scale = float(os.environ.get('REW_CRASH', -2.0))
     crash_contact_scale = float(os.environ.get('REW_CRASH_CONTACT', -0.1))
     cmd_smoothness_scale = float(os.environ.get('REW_CMD_SMOOTHNESS', -0.1))
-    vel_toward_gate_reward_scale = float(os.environ.get('REW_VEL_TOWARD_GATE', 0.0))
 
     rewards = {
         'gate_pass_reward_scale': gate_pass_reward_scale,
@@ -135,7 +148,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         'crash_reward_scale': crash_reward_scale,
         'crash_contact_scale': crash_contact_scale,
         'cmd_smoothness_scale': cmd_smoothness_scale,
-        'vel_toward_gate_reward_scale': vel_toward_gate_reward_scale,
     }
     # TODO ----- END -----
 
@@ -164,8 +176,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if "ENV_OVERRIDES" in os.environ:
         try:
             env_overrides = json.loads(os.environ["ENV_OVERRIDES"])
-            for k, v in env_overrides.items():
-                setattr(env_cfg, k, v)
+            apply_env_overrides(env_cfg, env_overrides)
             print(f"[INFO] Applied ENV_OVERRIDES: {env_overrides}")
         except Exception as e:
             print(f"[Warning] Failed to parse ENV_OVERRIDES: {e}")

@@ -83,6 +83,16 @@ from isaaclab_rl.rsl_rl import (
 import src.isaac_quad_sim2real.tasks   # noqa: F401
 
 
+def apply_env_overrides(env_cfg, env_overrides):
+    """Apply flat or dotted env overrides, with a gate_side convenience alias."""
+    for key, value in env_overrides.items():
+        parts = ["gate_model", "gate_side"] if key == "gate_side" else key.split(".")
+        target = env_cfg
+        for part in parts[:-1]:
+            target = getattr(target, part)
+        setattr(target, parts[-1], value)
+
+
 def run_eval(env, policy, max_steps, label="Eval"):
     """Run evaluation and collect lap/gate statistics."""
     obs = env.get_observations()
@@ -200,8 +210,7 @@ def main():
     if "ENV_OVERRIDES" in os.environ:
         try:
             env_overrides = json.loads(os.environ["ENV_OVERRIDES"])
-            for k, v in env_overrides.items():
-                setattr(env_cfg, k, v)
+            apply_env_overrides(env_cfg, env_overrides)
             print(f"[INFO] Applied ENV_OVERRIDES (Phase 1): {env_overrides}")
         except Exception as e:
             print(f"[Warning] Failed to parse ENV_OVERRIDES for Phase 1: {e}")
@@ -269,8 +278,7 @@ def main():
     if "ENV_OVERRIDES" in os.environ:
         try:
             env_overrides = json.loads(os.environ["ENV_OVERRIDES"])
-            for k, v in env_overrides.items():
-                setattr(env_cfg2, k, v)
+            apply_env_overrides(env_cfg2, env_overrides)
             print(f"[INFO] Applied ENV_OVERRIDES (Phase 2): {env_overrides}")
         except Exception as e:
             print(f"[Warning] Failed to parse ENV_OVERRIDES for Phase 2: {e}")

@@ -101,6 +101,16 @@ import isaaclab_tasks          # noqa: F401
 import src.isaac_quad_sim2real.tasks  # noqa: F401
 
 
+def apply_env_overrides(env_cfg, env_overrides):
+    """Apply flat or dotted env overrides, with a gate_side convenience alias."""
+    for key, value in env_overrides.items():
+        parts = ["gate_model", "gate_side"] if key == "gate_side" else key.split(".")
+        target = env_cfg
+        for part in parts[:-1]:
+            target = getattr(target, part)
+        setattr(target, parts[-1], value)
+
+
 # ── TA parameter pool ─────────────────────────────────────────────────────────
 # Each entry: (name, cfg_attr_for_nominal, scale_lo, scale_hi)
 # Actual tensor writes are done manually in apply_per_env_params() because the
@@ -632,8 +642,7 @@ def main():
     if "ENV_OVERRIDES" in os.environ:
         try:
             env_overrides = json.loads(os.environ["ENV_OVERRIDES"])
-            for k, v in env_overrides.items():
-                setattr(env_cfg, k, v)
+            apply_env_overrides(env_cfg, env_overrides)
             print(f"[INFO] Applied ENV_OVERRIDES: {env_overrides}")
         except Exception as e:
             print(f"[Warning] Failed to parse ENV_OVERRIDES: {e}")

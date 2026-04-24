@@ -4,6 +4,110 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Gate0p8 vs Ground20 and New Gate3 Direction] - 2026-04-25
+
+Ran the two clean overnight ablations on top of the restored
+`fullswitch + real-effective TWR=1.87` base.
+
+Batch results:
+
+| Candidate | Takeoff SR | Overall SR | Mean 3-lap | Std | Best | Worst | Max tilt mean / p95 | Notes |
+|---|---:|---:|---:|---:|---:|---:|---|---|
+| `twr1p87-gate0p8-5000` | 98.8% overall | 98.9% | **18.58 s** | 0.42 s | 17.74 s | 24.08 s | 59° / 63° | Slightly faster than `ground20`, still very high SR. |
+| `twr1p87-ground20-5000` | **99.0% overall** | **99.0%** | 18.70 s | **0.32 s** | 17.74 s | **20.94 s** | 59° / 62° | Slightly slower mean time, but tighter tail and slightly higher robustness. |
+
+Shared observation:
+
+- Both runs still show `Peak body-rate: mean=1.00 of max`, i.e. the controller
+  is still saturating rate authority in essentially all successful episodes.
+- The two changes help different axes:
+  - `gate0p8` buys a small speed gain;
+  - `ground20` buys a slightly safer and tighter completion distribution.
+
+Interpretation:
+
+- Neither result is a clear enough win to replace the current real base on its
+  own.
+- `gate0p8` looks like the better pure speed candidate.
+- `ground20` looks like the better takeoff / deployment-robustness candidate.
+- The next more meaningful direction is not another small gate/reset tweak, but
+  reducing the sim-only Gate 3 switch constraint that can under-count visible
+  passes and push training toward an unnecessarily conservative loop line.
+
+New direction:
+
+- `eval_powerloop_real_twr.sh` was updated so eval behaves closer to the real
+  controller at Gate 3:
+  - `approach_x_threshold=0.0`
+  - `backtrack_check_enabled=false`
+- New planned training ablation:
+  - first reduce `approach_x_threshold` from `0.3 -> 0.1`
+  - then disable it entirely with `approach_x_threshold=0.0`
+- This isolates whether the current speed/robustness ceiling is being limited
+  by the Gate 3 training switch detector rather than by TWR, gate size, or
+  reset distribution.
+
+Added:
+
+```bash
+scripts/run/train_powerloop_fullswitch_real_twr_gate3switch_ablation.sh
+```
+
+This sequentially trains two clean candidates from the same `twr1p87` base:
+
+| Candidate | Change | Purpose |
+|---|---|---|
+| `twr1p87-g3approach0p1-5000` | `approach_x_threshold: 0.3 -> 0.1` | Reduce Gate 3 switch strictness without fully removing it. |
+| `twr1p87-g3approach0p0-5000` | `approach_x_threshold: 0.3 -> 0.0` | Remove the Gate 3 sim-only approach gate and align training more closely with the real controller's switching semantics. |
+
+---
+
+## [Powerloop Return-to-Base Overnight Plan] - 2026-04-23
+
+Decision after Apr22 real bag evaluation: return to the plain
+`fullswitch + real-effective TWR=1.87` policy as the base. The speed reward
+variants did not beat it in real flight.
+
+Added:
+
+```bash
+scripts/run/train_powerloop_fullswitch_real_twr_overnight_return_base.sh
+```
+
+Default command:
+
+```bash
+./scripts/run/train_powerloop_fullswitch_real_twr_overnight_return_base.sh
+```
+
+This sequentially trains three 5000-iteration candidates:
+
+| Candidate | Change from current best base | Purpose |
+|---|---|---|
+| `twr1p87-5000` | Same `twr1p87` base, train for 5000 iterations | Check whether longer training improves the already best real policy. |
+| `twr1p87-ground20-5000` | `ground_reset_ratio: 0.10 -> 0.20` | More ground-start coverage for real takeoff/deployment robustness. |
+| `twr1p87-gate0p8-5000` | `gate_side: 0.70 -> 0.80` | Test a slightly less conservative virtual gate / reward window. |
+
+The `ground20` and `gate0p8` runs are separate ablations, not cumulative.
+
+Implementation note: `gate_side` lives at `env_cfg.gate_model.gate_side`, not
+as a top-level env config field. Added dotted/nested ENV override support to
+`train_race.py`, `eval_race.py`, `play_race.py`, and `batch_eval_race.py`, with
+`"gate_side": 0.8` as a convenience alias for
+`"gate_model.gate_side": 0.8`.
+
+`eval_powerloop_real_twr.sh` now accepts `EXTRA_ENV_OVERRIDES` and merges it
+into the fixed real-TWR eval config. The overnight script uses this so the
+`gate0p8` checkpoint is evaluated with `gate_side=0.8`, matching its training
+observation/reward gate.
+
+If the `gate0p8` checkpoint is used in real flight, the real controller's
+observation gate should also use a `0.8 m` virtual opening; otherwise the
+policy was trained with a different gate observation than it receives on the
+drone.
+
+---
+
 ## [Apr22 Real Powerloop Bag Eval] - 2026-04-23
 
 Reprocessed the `rosbags_apr22` real powerloop bags after two analysis fixes:
