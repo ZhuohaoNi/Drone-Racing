@@ -13,6 +13,9 @@ All results below are from `1000/1000` ground starts. This is different from the
 older mixed-reset batch evals, which had only about `210/1000` ground starts.
 
 ### `twr1p87-5000`
+seed-42: 19.3s
+seed-123 (only 1000 iterations): crash
+
 
 Run:
 
@@ -41,6 +44,7 @@ Interpretation: this is the cleanest ground-start result so far. The original
 `best_model.pt` remains the best checkpoint after the corrected selector.
 
 ### `gate0p8-5000`
+19.55s
 
 Run:
 
@@ -225,6 +229,7 @@ EXTRA_ENV_OVERRIDES='{"gate_side":0.8}' \
 ---
 
 ## [Final Tight-DR Overnight Partial Results] - 2026-04-27
+20.88s
 
 Status while this note was written:
 
