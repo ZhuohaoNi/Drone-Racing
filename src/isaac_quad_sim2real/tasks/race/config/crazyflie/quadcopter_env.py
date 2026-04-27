@@ -141,11 +141,23 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     obs_yaw_bias_deg = 0.0          # deterministic yaw bias applied to observation frame
     obs_lin_vel_bias = field(default_factory=lambda: [0.0, 0.0, 0.0])
     obs_gate_corner_bias = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    obs_lin_vel_bias_range = 0.0    # reset-sampled per-env body-velocity bias, uniform +/- range
+    obs_gate_corner_bias_range = 0.0 # reset-sampled per-env gate-corner bias, uniform +/- range
     use_spline_reset = False        # fixed baseline: rely on replay + ground + linear interp resets
     spline_vel_min = 0.5            # only used when use_spline_reset=True
     spline_vel_max = 1.5
+    linear_reset_vel_min = 0.0      # optional velocity for non-spline linear fallback resets
+    linear_reset_vel_max = 0.0
     replay_reset_ratio = 0.3        # baseline cache replay ratio; D1 can stage this in over training
     ground_reset_ratio = 0.2        # baseline ground-start coverage
+    real_start_reset_ratio = 0.0    # narrow ground-start distribution around the real race launch pose
+    real_start_x_local_min = -2.2
+    real_start_x_local_max = -1.2
+    real_start_y_local_min = -0.25
+    real_start_y_local_max = 0.25
+    real_start_yaw_noise = 0.08
+    segment_focus_reset_ratio = 0.0 # oversample selected segment-start gates in linear fallback resets
+    segment_focus_gate_indices = field(default_factory=list)
     staged_replay_reset = False     # baseline keeps replay always-on; D1 enables Song-style warmup
     replay_warmup_iterations = 0    # when staged, replay ratio is 0 before this iteration
     replay_full_iterations = 0      # when staged, replay reaches full ratio at this iteration

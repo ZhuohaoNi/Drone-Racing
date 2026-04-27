@@ -4,6 +4,646 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Ground-Only Checkpoint Selection Results] - 2026-04-27
+
+Ran the final real-start selector with `REAL_GROUND_ONLY=1` on the three main
+5000-iteration policy families.
+
+All results below are from `1000/1000` ground starts. This is different from the
+older mixed-reset batch evals, which had only about `210/1000` ground starts.
+
+### `twr1p87-5000`
+
+Run:
+
+```text
+2026-04-24_10-16-47_powerloop-r1d1-gate3mask-fullswitch-twr1p87-5000-seed42
+```
+
+Selected checkpoint:
+
+| Rank | Checkpoint | SR | Ground SR | Takeoff | Mean | Std | Best | Worst | Rule |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | `best_model.pt` | 100.0% | 100.0% | 100.0% | **18.10 s** | 0.08 s | 17.92 s | 18.36 s | yes |
+| 2 | `model_750_5415.pt` | 100.0% | 100.0% | 100.0% | 18.15 s | 0.07 s | 17.96 s | 18.36 s | yes |
+| 3 | `model_700_5360.pt` | 100.0% | 100.0% | 100.0% | 18.18 s | 0.08 s | 17.98 s | 18.40 s | yes |
+| 4 | `model_600_5433.pt` | 100.0% | 100.0% | 100.0% | 18.31 s | 0.12 s | 18.06 s | 18.62 s | yes |
+| 5 | `model_2350_5416.pt` | 100.0% | 100.0% | 100.0% | 18.52 s | 0.08 s | 18.32 s | 18.74 s | yes |
+
+Summary files:
+
+```text
+logs/rsl_rl/quadcopter_direct/2026-04-24_10-16-47_powerloop-r1d1-gate3mask-fullswitch-twr1p87-5000-seed42/batch_eval/checkpoint_selection_summary_ground_only.csv
+logs/rsl_rl/quadcopter_direct/2026-04-24_10-16-47_powerloop-r1d1-gate3mask-fullswitch-twr1p87-5000-seed42/batch_eval/checkpoint_selection_summary_ground_only.json
+```
+
+Interpretation: this is the cleanest ground-start result so far. The original
+`best_model.pt` remains the best checkpoint after the corrected selector.
+
+### `gate0p8-5000`
+
+Run:
+
+```text
+2026-04-24_21-09-38_powerloop-r1d1-gate3mask-fullswitch-twr1p87-gate0p8-5000-seed42
+```
+
+Selected checkpoint:
+
+| Rank | Checkpoint | SR | Ground SR | Takeoff | Mean | Std | Best | Worst | Rule |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | `model_600_5477.pt` | 100.0% | 100.0% | 100.0% | **18.26 s** | 0.05 s | 18.12 s | 18.40 s | yes |
+| 2 | `model_550_5464.pt` | 100.0% | 100.0% | 100.0% | 18.55 s | 0.06 s | 18.38 s | 18.72 s | yes |
+| 3 | `best_model.pt` | 100.0% | 100.0% | 100.0% | 18.59 s | 0.09 s | 18.38 s | 20.08 s | yes |
+| 4 | `model_2900_5515.pt` | 100.0% | 100.0% | 100.0% | 18.60 s | 0.17 s | 18.34 s | 22.16 s | yes |
+| 5 | `model_500_5327.pt` | 100.0% | 100.0% | 100.0% | 19.09 s | 0.07 s | 18.94 s | 19.28 s | no |
+
+Summary files:
+
+```text
+logs/rsl_rl/quadcopter_direct/2026-04-24_21-09-38_powerloop-r1d1-gate3mask-fullswitch-twr1p87-gate0p8-5000-seed42/batch_eval/checkpoint_selection_summary_ground_only.csv
+logs/rsl_rl/quadcopter_direct/2026-04-24_21-09-38_powerloop-r1d1-gate3mask-fullswitch-twr1p87-gate0p8-5000-seed42/batch_eval/checkpoint_selection_summary_ground_only.json
+```
+
+Interpretation: `gate0p8` is clean under ground-only eval, but it does **not**
+beat `twr1p87-5000 best_model.pt` on mean time. Deploy only if the real
+controller observation gate is matched to `0.8 m`; otherwise do not fly it.
+
+### `ground20-5000`
+
+Run:
+
+```text
+2026-04-24_15-43-22_powerloop-r1d1-gate3mask-fullswitch-twr1p87-ground20-5000-seed42
+```
+
+Selected checkpoint:
+
+| Rank | Checkpoint | SR | Ground SR | Takeoff | Mean | Std | Best | Worst | Rule |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | `model_4700_5664.pt` | 100.0% | 100.0% | 100.0% | **18.59 s** | 0.16 s | 18.36 s | 20.24 s | yes |
+| 2 | `best_model.pt` | 100.0% | 100.0% | 100.0% | 18.62 s | 0.10 s | 18.42 s | 19.30 s | yes |
+| 3 | `model_4200_5625.pt` | 100.0% | 100.0% | 100.0% | 18.64 s | 0.13 s | 18.34 s | 18.92 s | yes |
+| 4 | `model_4900_5696.pt` | 100.0% | 100.0% | 100.0% | 18.66 s | 0.16 s | 18.42 s | 21.94 s | no |
+| 5 | `model_3800_5643.pt` | 100.0% | 100.0% | 100.0% | 18.66 s | 0.10 s | 18.44 s | 18.92 s | no |
+
+Summary files:
+
+```text
+logs/rsl_rl/quadcopter_direct/2026-04-24_15-43-22_powerloop-r1d1-gate3mask-fullswitch-twr1p87-ground20-5000-seed42/batch_eval/checkpoint_selection_summary_ground_only.csv
+logs/rsl_rl/quadcopter_direct/2026-04-24_15-43-22_powerloop-r1d1-gate3mask-fullswitch-twr1p87-ground20-5000-seed42/batch_eval/checkpoint_selection_summary_ground_only.json
+```
+
+Interpretation: `ground20` is clean, but slower than the base. It remains a
+backup/safety candidate, not the primary speed policy.
+
+Current deployment read:
+
+- Primary sim-selected checkpoint: `twr1p87-5000 best_model.pt`.
+- Real-validated fallback: `2026-04-22_00-53-52...twr1p87 best_model.pt`.
+- Optional 0.8 observation candidate: `gate0p8-5000 model_600_5477.pt`, only if
+  the real controller observation gate is explicitly set to `0.8 m`.
+- Safety/backup candidate: `ground20-5000 model_4700_5664.pt` or
+  `ground20-5000 best_model.pt`.
+
+---
+
+## [Ground-Only Final Eval Fix] - 2026-04-27
+
+Finding:
+
+- `batch_eval_race.py` runs with `env_cfg.is_train=True` to keep the reset and
+  dynamics hooks active.
+- Therefore reset sampling follows the training-style reset mixture unless
+  overridden.
+- With default `ground_reset_ratio=0.2`, a `1000`-env eval only has about
+  `200` ground launches, e.g. `210/1000`. The rest are mid-course spline/linear
+  resets.
+- Real official testing starts from the ground, so the mixed-reset eval is a
+  robustness diagnostic, not the final real-start selector.
+
+Change:
+
+- `batch_eval_race.py` now reports `Ground 3-Lap SR` and stores
+  `ground_success_rate_pct` in the result JSON.
+- `eval_powerloop_checkpoint_candidates.sh` now defaults to:
+
+```bash
+REAL_GROUND_ONLY=1
+```
+
+which merges these env overrides:
+
+```json
+{"ground_reset_ratio":1.0,"replay_reset_ratio":0.0,"real_start_reset_ratio":1.0}
+```
+
+- `train_powerloop_fullswitch_real_twr_final_attempt.sh` now defaults final
+  candidate eval to `REAL_GROUND_ONLY=1`.
+- `eval_powerloop_real_twr.sh` also now defaults to `REAL_GROUND_ONLY=1`, so
+  direct calls such as `./scripts/run/eval_powerloop_real_twr.sh <run> <ckpt>
+  1000` use `1000/1000` real-like ground starts by default.
+- Ground-only checkpoint evals are saved under separate
+  `batch_eval/<checkpoint>_ground_only/` directories so old mixed-reset JSONs
+  are not accidentally reused.
+- To intentionally run the old mixed-reset robustness eval, call the selector
+  with `REAL_GROUND_ONLY=0`.
+- Candidate selection now defaults to `CANDIDATE_STRATEGY=hybrid`: always
+  include `best_model.pt`, use most slots for highest training-reward
+  `model_*.pt` checkpoints across the full run, and reserve a few slots for
+  latest/late/window anchors. This avoids both failure modes: missing
+  mid-training policies such as `model_1900_5476.pt`, and letting one reward
+  spike window monopolize all eval slots.
+- To intentionally use only `best_model.pt` plus global reward top checkpoints,
+  call the selector with `CANDIDATE_STRATEGY=global_top`.
+- To use the older anchor-heavy behavior, call the selector with
+  `CANDIDATE_STRATEGY=stratified`.
+
+Final real-flight selection command for a `gate0p8` checkpoint family:
+
+```bash
+REAL_GROUND_ONLY=1 \
+EXTRA_ENV_OVERRIDES='{"gate_side":0.8}' \
+./scripts/run/eval_powerloop_checkpoint_candidates.sh \
+  <run_dir> 1000 20 3000
+```
+
+This should print `Ground starts: 1000/1000`; otherwise it is not the final
+real-start eval.
+
+---
+
+## [Checkpoint Selection Fix] - 2026-04-27
+
+Finding:
+
+- `best_model.pt` is selected by RSL-RL training reward only:
+  `statistics.mean(rewbuffer)` in `on_policy_runner.py`.
+- This does **not** match the real-flight selection criterion. It does not
+  directly optimize 3-lap success rate, gate-hit robustness, mean lap time,
+  standard deviation, or worst-case tail.
+- Current example:
+  `2026-04-27_01-43-18_powerloop-r1d1-gate3mask-fullswitch-twr1p87-final-tightdr-gate0p8-5000-seed42`
+  saved `best_model.pt` around iteration `513` at
+  `Train/mean_reward = 5746.86`. Its batch eval is poor:
+  `84.7% SR`, `19.09 s` mean, `1.26 s` std, `28.44 s` worst.
+
+Interpretation:
+
+- The training reward is useful for optimization but too noisy for final
+  checkpoint selection. A fast/aggressive checkpoint can win training reward
+  while having bad gate-clearance tail behavior.
+- For real-flight decisions, `best_model.pt` should be treated as one candidate,
+  not the answer.
+
+Change:
+
+- Added:
+
+```bash
+scripts/run/eval_powerloop_checkpoint_candidates.sh
+```
+
+- The selector batch-evals `best_model.pt`, the latest saved checkpoint, and
+  high-reward/later `model_*.pt` candidates, then ranks them by:
+  success rate first, mean 3-lap time second, then std and worst-case tail.
+- Updated `scripts/run/train_powerloop_fullswitch_real_twr_final_attempt.sh` so
+  future automatic evals use checkpoint-candidate selection instead of only
+  evaluating `best_model.pt`.
+
+For the currently running `gate0p8` process, the already-started bash script may
+still run the old single-`best_model.pt` eval after training finishes. Manually
+run the selector after completion:
+
+```bash
+EXTRA_ENV_OVERRIDES='{"gate_side":0.8}' \
+./scripts/run/eval_powerloop_checkpoint_candidates.sh \
+  2026-04-27_01-43-18_powerloop-r1d1-gate3mask-fullswitch-twr1p87-final-tightdr-gate0p8-5000-seed42 \
+  1000 8 2000
+```
+
+---
+
+## [Final Tight-DR Overnight Partial Results] - 2026-04-27
+
+Status while this note was written:
+
+- `final-tightdr-g20-linearvel0p6` completed training and batch eval.
+- `final-tightdr-g20-twr1p99` was still training.
+- `final-tightdr-gate0p8` and `final-tightdr-gate0p8-linearvel0p6` had not
+  started yet.
+
+Completed result:
+
+| Candidate | Main change | SR | Takeoff SR | Mean 3-lap | Std | Best | Worst | Decision |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| `final-tightdr-g20-linearvel0p6` | tight DR, `ground20`, linear reset velocity `0.2-0.6 m/s` | 98.3% | 98.5% | 19.46 s | 0.45 s | 18.50 s | 22.72 s | Reject as speed candidate. |
+
+Comparison to the relevant references:
+
+| Candidate | SR | Mean 3-lap | Std | Best | Interpretation |
+|---|---:|---:|---:|---:|---|
+| `twr1p87` base | 98.0% | 18.34 s | 0.48 s | 17.50 s | Still the real-validated speed baseline. |
+| `twr1p87-5000` | 98.2% | 18.32 s | 0.41 s | 17.52 s | Longer base training did not hurt and is marginally cleaner in sim. |
+| `ground20` | 99.0% | 18.70 s | 0.32 s | 17.74 s | Robustness/tail improvement, slower mean. |
+| `gate0p8` | 98.9% | 18.58 s | 0.42 s | 17.74 s | Best clean speed/robustness sim ablation so far, if real observation gate is matched. |
+| `ground20-linearvel1p2` | 97.8% | 18.68 s | 0.43 s | 17.84 s | Some speed signal, but SR/takeoff regression. |
+| `final-tightdr-g20-linearvel0p6` | 98.3% | 19.46 s | 0.45 s | 18.50 s | Lower reset velocity recovered SR but removed the speed signal. |
+
+Interpretation:
+
+- The smaller linear reset velocity did not solve the tradeoff. Reducing
+  `linear_reset_vel_max` from `1.2` to `0.6` recovered some reliability, but it
+  also made the policy much slower. This suggests the `linearvel1p2` speed was
+  not a clean distribution-match improvement; it was partly training a more
+  aggressive state distribution that hurt reliability.
+- Tightening dynamics DR did not make this candidate faster. For this policy
+  family, the remaining speed gap is more likely path/geometry/raceline than
+  "too much DR".
+- Do not deploy `final-tightdr-g20-linearvel0p6`. If the TWR1.99 run also fails
+  the selection rule, the only promising new runs left are the pure `gate0p8`
+  tight-DR candidates.
+
+Current practical decision:
+
+- Keep existing `twr1p87` as the safest validated real policy.
+- Keep existing `gate0p8` as the best sim-side speed candidate if the real
+  controller observation gate can be changed to `0.8`.
+- Do not spend more attempts on linear reset velocity unless there is time for
+  a separate study; it is not a final-flight improvement.
+
+---
+
+## [Final Real-Flight Attempt Plan] - 2026-04-26
+
+Added the final overnight training entry point:
+
+```bash
+scripts/run/train_powerloop_fullswitch_real_twr_final_attempt.sh
+```
+
+Default command:
+
+```bash
+./scripts/run/train_powerloop_fullswitch_real_twr_final_attempt.sh
+```
+
+This is the last-attempt script before the next real flight. It deliberately
+does **not** add another Gate-3 detector, does **not** change the simple
+real-world gate switch semantics, does **not** reintroduce dense velocity
+reward shaping, and does **not** make DR larger. The final script uses tighter
+vehicle DR than the earlier base scripts while keeping reset diversity.
+
+Literature basis:
+
+- Pasumarti, Bianchi, and Loquercio, *Agile Flight Emerges from Multi-Agent
+  Competitive Racing*, report that sparse high-level racing objectives can
+  produce aggressive flight and transfer better than manually prescribing
+  progress/raceline behavior in the same sim/hardware setup:
+  https://arxiv.org/abs/2512.11781
+- The released UPenn codebase for that work trains the competitive policy in
+  Isaac Lab/MAPPO, but reproducing that stack is too large for the final
+  overnight attempt: https://github.com/Jirl-upenn/AgileFlight_MultiAgent
+- Kaufmann, Bauersfeld, Loquercio et al., *Swift*, combine sim RL with
+  real-world data-driven residual/noise models for transfer. We do not have
+  enough clean open-loop sysid for a full residual model before the last flight,
+  but this supports keeping the real-effective TWR/latency/noise calibration
+  rather than guessing broad new DR:
+  https://www.nature.com/articles/s41586-023-06419-4
+- Ferede et al., *One Net to Rule Them All*, show the DR tradeoff directly:
+  no randomization can fail transfer, while more randomization improves
+  robustness but costs speed. For this project, the right move is still
+  moderate, targeted DR around the identified vehicle, not huge randomization:
+  https://arxiv.org/abs/2504.21586
+- Loquercio et al., *Deep Drone Racing*, used domain-randomized simulation for
+  zero-shot agile flight transfer, but in a modular perception/planning stack.
+  The lesson relevant here is not to add a fancy gate detector; it is to keep
+  the training/deployment interface consistent:
+  https://arxiv.org/abs/1905.09727
+
+Local evidence being acted on:
+
+- `twr1p87` remains the only policy with strong real evidence: Apr22 official
+  3-lap eval `19.004 s`, 5 ordered laps, mean lap `6.236 s`.
+- Gate-3 approach-gating ablations failed to beat the base.
+- Speed rewards (`speedv1` through `speedv5`) either reduced SR, slowed mean
+  time, or failed in real bags. The best-case rollout time was not predictive
+  of real success.
+- `ground20` improved/tightened robustness but was slightly slower.
+- `gate0p8` was already run twice. The complete run
+  `2026-04-24_21-09-38_powerloop-r1d1-gate3mask-fullswitch-twr1p87-gate0p8-5000-seed42`
+  trained with `gate_side=0.8`, `ground_reset_ratio=0.10`,
+  `twr_randomization_pct=0.06`, aero DR `0.5-2.0`, and PID DR `0.15/0.30`.
+  Batch result: `98.9%` SR, `18.58 s` mean, `0.42 s` std, `17.74 s` best.
+  It was the fastest clean return-to-base sim ablation, but it requires
+  matching real observation gate geometry.
+- `ground20-linearvel` showed a real speed signal, but `linear_reset_vel_max=1.2`
+  hurt SR/tail. The final script tests a smaller `0.6 m/s` cap.
+- Apr22 b5 sysid/rosbag analysis estimates real TWR around `1.99`, while the
+  current base is centered at `1.87`; a TWR-1.99 candidate is worth one run
+  because it does not require controller changes.
+- DR should stay targeted for the last flight. The final candidates tighten
+  dynamics DR to `twr_randomization_pct=0.04`, aero `0.8-1.2`, PID `0.08/0.15`.
+  Action-delay randomness stays on because fixed nominal eval profiles were too
+  easy in the Apr22 backtest.
+
+Final candidates trained by the script:
+
+| Candidate | Change | Controller change? | Expected use |
+|---|---|---|---|
+| `final-tightdr-g20-linearvel0p6` | tight DR, `ground_reset_ratio=0.20`, linear reset velocity `0.2-0.6 m/s` | No | Lowest-risk new speed candidate if it recovers the `linearvel` speed without the 1.2 m/s tail regression. |
+| `final-tightdr-g20` at `twr1p99` | tight DR, `ground_reset_ratio=0.20`, nominal `thrust_to_weight=1.99` | No | Tests whether centering training on Apr22 b5's real TWR improves speed without changing observations/reward. |
+| `final-tightdr-gate0p8` | tight DR, pure `gate_side=0.8`, `ground_reset_ratio=0.10` | **Yes, observation gate must be 0.8** | Reruns the already-good 0.8 direction without forcing the slower `ground20` stitch. |
+| `final-tightdr-gate0p8-linearvel0p6` | tight DR, pure `gate0p8 + linearvel0p6` | **Yes, observation gate must be 0.8** | Highest-upside candidate; only fly if batch eval is very clean. |
+
+Selection rule before real flight:
+
+- Existing `2026-04-22_00-53-52_powerloop-r1d1-gate3mask-fullswitch-twr1p87`
+  remains the primary validated real policy.
+- Existing `2026-04-24_21-09-38_powerloop-r1d1-gate3mask-fullswitch-twr1p87-gate0p8-5000-seed42`
+  remains the reference 0.8 checkpoint; the final 0.8 runs must beat or match
+  it before replacing it.
+- Only promote a new final candidate if `eval_powerloop_real_twr.sh` gives
+  roughly `SR >= 98.5%`, mean `<= 18.65 s`, std `<= 0.5 s`, and no ugly
+  worst-case tail.
+- A faster best-case alone is not sufficient; this already failed on speedv2.
+- If the real controller stays at `SAFETY_MARGIN=0.15` / observation
+  `gate_side=0.7`, do **not** deploy the `gate0p8` candidates.
+- If deploying `gate0p8`, set the real controller observation virtual opening
+  to `0.8 m` (for the current physical `gate_side=1.0`, that means
+  `SAFETY_MARGIN=0.10` or equivalent). This does not change the simple physical
+  plane-crossing gate switch; it only matches the policy observation geometry.
+
+Recommended real-flight order if there is time for multiple policies:
+
+1. Fly the existing `twr1p87` base first to re-establish the validated baseline.
+2. Fly the best no-controller-change final candidate only if its batch eval
+   passes the selection rule.
+3. Fly `gate0p8` only if the controller observation gate was explicitly matched
+   to `0.8`.
+4. Treat the combined `gate0p8-linearvel0p6` as an experimental/high-upside
+   run, not as the first race policy.
+
+---
+
+## [Real-Calibrated Eval Backtest Against Apr22 Bags] - 2026-04-26
+
+Backtested the new `eval_powerloop_real_calibrated.sh` profile against the
+three policies that were actually flown in `rosbags_apr22`.
+
+Goal: check whether the rosbag/sysid-calibrated profile reproduces real-world
+ranking before trusting it for deployment decisions.
+
+Real Apr22 ranking:
+
+| Policy | Real result |
+|---|---|
+| `twr1p87` base | Best: official 3-lap eval `19.004 s`, 5 ordered laps, mean lap `6.236 s`. |
+| `speedv4-currentvel-g560` | Middle: 4 ordered laps, best lap `6.659 s`, no `/ctbr_cmd` so no official eval time. |
+| `speedv2-postloopvel` | Worst: only 1 ordered lap, negative clearance at Gate 4, not a deployment candidate. |
+
+Backtest: `b5_apr22` profile, 512 envs, ground-start real-profile eval.
+
+| Policy | SR | Mean 3-lap | Std | Result |
+|---|---:|---:|---:|---|
+| `twr1p87` base | 100.0% | 18.24 s | 0.05 s | Stable, close-ish to real official time. |
+| `speedv2-postloopvel` | 100.0% | **17.96 s** | 0.07 s | Incorrectly ranked as best, despite real failure. |
+| `speedv4-currentvel-g560` | 100.0% | 18.57 s | 0.06 s | Incorrectly ranked behind speedv2. |
+
+Backtest: `latency4` profile, 512 envs, same as `b5_apr22` but fixed 4-step
+action delay.
+
+| Policy | SR | Mean successful 3-lap | Result |
+|---|---:|---:|---|
+| `twr1p87` base | 100.0% | 19.19 s | Still robust. |
+| `speedv2-postloopvel` | 45.7% | 18.39 s | Stress exposes fragility, but still not the real ranking. |
+| `speedv4-currentvel-g560` | 15.2% | 21.67 s | Over-penalized relative to real, where it completed 4 ordered laps. |
+
+Comparison to the older reset-diverse `eval_powerloop_real_twr.sh` artifacts:
+
+| Policy | Old eval SR | Old eval mean | Old eval std | Match to real |
+|---|---:|---:|---:|---|
+| `twr1p87` base | 98.0% | 18.34 s | 0.48 s | Correctly keeps base as strongest real candidate. |
+| `speedv2-postloopvel` | 96.2% | 18.68 s | 1.21 s | Flags higher variance / lower SR, but still underestimates real failure. |
+| `speedv4-currentvel-g560` | 98.0% | 18.80 s | 0.43 s | More consistent with real than `b5_apr22`, though still not perfect. |
+
+Conclusion:
+
+- The `b5_apr22` real-calibrated profile is **too easy** and should not be used
+  as a deployment-ranking metric. It removes too much reset/observation
+  diversity and fails to expose the real speedv2 failure mode.
+- The `latency4` profile is useful as a stress test, but it is not calibrated
+  either; it over-penalizes `speedv4` relative to real.
+- The older reset-diverse batch eval is still the better sim-side guardrail for
+  ranking policies. It did not perfectly predict speedv2's real crash, but it
+  at least showed speedv2 had worse SR and much worse tail variance.
+- The gap is likely not just TWR/start/latency. The remaining real failure mode
+  is probably tied to trajectory clearance / gate geometry / unmodeled
+  rate-loop overshoot or contact sensitivity. A fixed nominal profile cannot
+  expose that by itself.
+
+Decision:
+
+- Keep `eval_powerloop_real_calibrated.sh` as a diagnostic slice only.
+- Do not use `b5_apr22` profile to select the race policy.
+- For deployment ranking, require agreement between:
+  - reset-diverse `eval_powerloop_real_twr.sh`,
+  - targeted stress checks such as latency / gate bias / velocity bias,
+  - and real bag evidence when available.
+
+---
+
+## [Real-Calibrated Eval Profile] - 2026-04-26
+
+Added a separate eval entry point for checking policies under a more realistic
+single-drone profile instead of using the existing reset-diverse batch metric
+as the only decision signal:
+
+```bash
+scripts/run/eval_powerloop_real_calibrated.sh
+```
+
+Why this is needed:
+
+- `eval_powerloop_real_twr.sh` is not broad dynamics DR: it already uses
+  `--num_params_per_env 0` and `twr_randomization_pct=0.0`.
+- However, because `batch_eval_race.py` runs with `is_train=True`, the old
+  batch metric still includes training-style observation noise and random
+  reset distribution. It is a useful robustness/screening metric, but it is not
+  the same as the real race start.
+- The real system is one fixed vehicle on one day. Rosbags should therefore
+  define a fixed nominal profile plus a few targeted stress checks, not a huge
+  per-env dynamics randomization.
+
+Default profile: `b5_apr22`.
+
+| Field | Value | Source / reason |
+|---|---:|---|
+| `thrust_to_weight` | `1.99` | Apr22 b5 bags: max thrust `1.174 N`, pooled mass `~60.2 g`, so `1.174 / (0.0602*9.81) ~= 1.99`. |
+| `fixed_action_delay_steps` | `3` | Clean Apr22 rate-lag estimate `60-70 ms`; policy rate is 50 Hz, so 3 steps is about `60 ms`. |
+| `ground_reset_ratio` | `1.0` | Real race starts from the ground, not random mid-track states. |
+| `real_start_reset_ratio` | `1.0` | Use the narrow launch-pose distribution instead of the full training ground-start spread. |
+| `obs_noise_std_scale` | `0.0` | Disable training-scale observation noise for real-profile eval. |
+| `obs_lin_vel_noise_std` | `0.005` | Sysid stationary observation velocity noise is about `0.005 m/s`, not `0.05 m/s`. |
+| `obs_lin_vel_bias` | `[0.001, -0.0006, 0.0]` | Sysid stationary observation velocity bias mean. |
+| Gate switching | simple plane crossing | `approach_x_threshold=0.0`, `backtrack_check_enabled=false`, matching the deployed controller semantics. |
+
+Available profiles:
+
+| Profile | Purpose |
+|---|---|
+| `b5_apr22` | Default profile for the latest successful real powerloop session. |
+| `b3_apr20` | Older b3 profile with `thrust_to_weight=1.87`, but the same fixed 3-step delay and real-start eval shape. |
+| `latency4` | Stress check for the high side of the measured `60-70 ms` lag. |
+| `legacy` | Approximate the previous `eval_powerloop_real_twr.sh` profile for A/B comparison. |
+
+Recommended use:
+
+```bash
+./scripts/run/eval_powerloop_real_calibrated.sh \
+  2026-04-22_00-53-52_powerloop-r1d1-gate3mask-fullswitch-twr1p87 \
+  best_model.pt 1000 b5_apr22
+```
+
+Interpretation rule:
+
+- Use `eval_powerloop_real_twr.sh` as a reset-diverse robustness screen.
+- Use `eval_powerloop_real_calibrated.sh b5_apr22` only as a diagnostic
+  fixed-profile slice. The backtest above shows it is not reliable for
+  deployment ranking by itself.
+- If these disagree, do not automatically trust the real-calibrated profile;
+  inspect the failure mode and prefer the reset-diverse robustness metric plus
+  real bag evidence.
+- This still does not replace real bags: race rosbags are closed-loop and
+  policy-biased, so they can calibrate TWR/start/latency/noise envelopes, but a
+  clean open-loop sysid bag is still needed for motor tau, aero, and rate-loop
+  dynamics.
+
+---
+
+## [Post-Gate3 Reset-Speed Overnight Results] - 2026-04-26
+
+Completed the four reset-distribution speed ablations from
+`train_powerloop_fullswitch_real_twr_overnight_realstart_speed.sh`.
+
+Evaluation setup:
+
+- Checkpoint: `best_model.pt`
+- Eval script: `scripts/run/eval_powerloop_real_twr.sh`
+- Eval size: `1000` envs for the four new runs; reference rows below use the
+  prior matched real-TWR eval artifacts.
+- Shared base: `fullswitch + real-effective TWR=1.87`, same base reward,
+  `replay_reset_ratio=0.25`, `ground_reset_ratio=0.20`, staged replay.
+- These runs did not change the real controller and did not add velocity reward.
+
+Batch eval results:
+
+| Candidate | Success | Takeoff SR | Mean 3-lap | Std | Best | Worst | Result |
+|---|---:|---:|---:|---:|---:|---:|---|
+| current `twr1p87` base reference | 98.0% | 96.7% | **18.34 s** | 0.48 s | **17.50 s** | 24.24 s | Still the speed reference and real-validated base. |
+| `ground20-5000` reference | **99.0%** | **99.0%** | 18.70 s | **0.32 s** | 17.74 s | **20.94 s** | Still the clean robustness reference. |
+| `ground20-realstart60-5000` | 98.7% | 98.6% | 19.45 s | 0.41 s | 18.68 s | 22.86 s | Reject for speed; maybe useful only as a deployment-start idea. |
+| `ground20-postloopfocus-5000` | 98.9% | 98.6% | 19.10 s | 0.41 s | 18.22 s | 22.36 s | Stable, but slower than both base and `ground20`. |
+| `ground20-linearvel-5000` | 97.8% | 96.6% | 18.68 s | 0.43 s | 17.84 s | 22.78 s | Fastest of this batch, but SR/tail regress. |
+| `ground20-splinevel-5000` | 67.5% | 97.5% | 20.50 s | 1.61 s | 18.50 s | 29.58 s | Reject; completion robustness collapsed. |
+
+Interpretation:
+
+- None of the four reset-speed ablations beats the current real base. The
+  original `twr1p87` policy remains the speed reference and is still the only
+  policy already validated by the Apr22 real bag.
+- `ground20-linearvel` partially supports the hypothesis that zero-velocity
+  mid-track resets are suboptimal: it is the fastest new candidate and roughly
+  matches `ground20` mean time. But the cost is real: `97.8%` SR, worse takeoff
+  SR, worse std, and worse tail. It is not a replacement candidate as-is.
+- `ground20-realstart60` did not translate real-start matching into speed. It
+  keeps high SR but slows the mean by about `+0.75 s` vs `ground20` and
+  `+1.13 s` vs the current base. Narrowing ground starts likely reduces useful
+  reset diversity and teaches a more conservative launch/first-gate behavior.
+- `ground20-postloopfocus` is safer than `linearvel` but still too slow. More
+  resets on target gates `[5,6,0]` improve neither mean time nor tail enough to
+  justify replacing `ground20`.
+- `ground20-splinevel` is a clear negative result. Moving spline resets with
+  `1.0-3.0 m/s` tangent velocity create a reset distribution the current reward
+  and policy optimization do not handle; first-gate/takeoff is fine, but many
+  episodes fail before completing 3 laps.
+
+Decision:
+
+- Keep `2026-04-22_00-53-52_powerloop-r1d1-gate3mask-fullswitch-twr1p87` as
+  the real-flight base.
+- Keep `ground20-5000` as the robustness/takeoff reference, not a speed
+  replacement.
+- Do not deploy `realstart60`, `postloopfocus`, or `splinevel`.
+- Do not deploy `linearvel` unless a follow-up run recovers SR to roughly
+  `98.5-99%` while preserving the `18.6-18.7 s` mean.
+
+Next direction:
+
+- Stop adding more reset-complexity around Gate 3 or spline states for now.
+- If continuing speed work, use the validated base and test smaller,
+  lower-risk changes: slightly wider virtual gate (`gate0p8`) with matching
+  real observation gate, mild time pressure, or a lower `linear_reset_vel_max`
+  such as `0.6-0.8 m/s` to see whether `linearvel` can keep its speed without
+  the SR/tail regression.
+
+---
+
+## [Post-Gate3 Reset-Speed Overnight Plan] - 2026-04-25
+
+The Gate 3 approach-gating ablations did not beat the restored
+`fullswitch + real-effective TWR=1.87` base. The real controller already uses
+the simple physical rule that matters onsite: after the drone crosses the gate
+plane inside the gate window, the gate is counted. Training should therefore
+move away from more Gate 3 switch tricks and back to reset distributions that
+match real deployment and the slow real segments.
+
+Latest sim batch-eval summary:
+
+| Candidate | Success | Mean 3-lap | Interpretation |
+|---|---:|---:|---|
+| current `twr1p87` base | 98.2% | **18.32 s** | Still the speed reference. |
+| `ground20-5000` | **99.0%** | 18.70 s | More robust/tighter tail, not faster. |
+| `g3approach0p1-5000` | 86.1% | 19.26 s | Too much SR loss. |
+| `g3approach0p0-5000` | 98.3% | 20.18 s | SR recovers, but clearly slower. |
+
+Added:
+
+```bash
+scripts/run/train_powerloop_fullswitch_real_twr_overnight_realstart_speed.sh
+```
+
+Default command:
+
+```bash
+./scripts/run/train_powerloop_fullswitch_real_twr_overnight_realstart_speed.sh
+```
+
+This sequentially trains four 5000-iteration candidates, all preserving the
+same base reward and real-effective dynamics:
+
+| Candidate | Change | Intended effect |
+|---|---|---|
+| `ground20-realstart60` | `ground_reset_ratio=0.20`; 60% of ground resets use a narrow real launch-pose distribution | Better takeoff/start behavior and potentially faster official start-to-Gate0 time. |
+| `ground20-postloopfocus` | `segment_focus_reset_ratio=0.50`; focus target gates `[5,6,0]` | More practice on the slow/fragile post-loop real segments without adding a velocity reward. |
+| `ground20-linearvel` | linear fallback resets start with `0.3-1.2 m/s` velocity toward the target gate | Reduce train/test mismatch from zero-velocity mid-track resets; should be the cleanest speed-oriented reset ablation. |
+| `ground20-splinevel` | enable spline resets with `1.0-3.0 m/s` tangent velocity | More realistic moving-state coverage, but higher risk of hurting success rate. |
+
+Selection rule: only consider a candidate better than the current base if it
+keeps sim success around the current `98-99%` range and improves mean time or
+tail time. `ground20-realstart60` is mainly a real deployment/start candidate;
+`postloopfocus`, `linearvel`, and `splinevel` are the speed candidates.
+
+Implementation details:
+
+- Added reset knobs for real-start ground rows, segment-focused linear resets,
+  and optional target-directed velocity on linear fallback resets.
+- Added reset-sampled observation bias ranges for future robustness ablations,
+  but the overnight speed script leaves these off.
+- Added TensorBoard logging for the new reset/bias config values.
+
+---
+
 ## [Gate0p8 vs Ground20 and New Gate3 Direction] - 2026-04-25
 
 Ran the two clean overnight ablations on top of the restored
@@ -31,21 +671,22 @@ Interpretation:
 - `gate0p8` looks like the better pure speed candidate.
 - `ground20` looks like the better takeoff / deployment-robustness candidate.
 - The next more meaningful direction is not another small gate/reset tweak, but
-  reducing the sim-only Gate 3 switch constraint that can under-count visible
-  passes and push training toward an unnecessarily conservative loop line.
+  reducing the training-only Gate 3 constraints that do not exist in the real
+  controller and may push training toward an unnecessarily conservative loop
+  line.
 
 New direction:
 
 - `eval_powerloop_real_twr.sh` was updated so eval behaves closer to the real
-  controller at Gate 3:
+  controller's simple physical gate-switch semantics at Gate 3:
   - `approach_x_threshold=0.0`
   - `backtrack_check_enabled=false`
 - New planned training ablation:
   - first reduce `approach_x_threshold` from `0.3 -> 0.1`
   - then disable it entirely with `approach_x_threshold=0.0`
 - This isolates whether the current speed/robustness ceiling is being limited
-  by the Gate 3 training switch detector rather than by TWR, gate size, or
-  reset distribution.
+  by training-only Gate 3 constraints rather than by TWR, gate size, or reset
+  distribution.
 
 Added:
 
@@ -58,7 +699,7 @@ This sequentially trains two clean candidates from the same `twr1p87` base:
 | Candidate | Change | Purpose |
 |---|---|---|
 | `twr1p87-g3approach0p1-5000` | `approach_x_threshold: 0.3 -> 0.1` | Reduce Gate 3 switch strictness without fully removing it. |
-| `twr1p87-g3approach0p0-5000` | `approach_x_threshold: 0.3 -> 0.0` | Remove the Gate 3 sim-only approach gate and align training more closely with the real controller's switching semantics. |
+| `twr1p87-g3approach0p0-5000` | `approach_x_threshold: 0.3 -> 0.0` | Remove the Gate 3 sim-only approach gate and align training more closely with the real controller's simple plane-crossing switch semantics. |
 
 ---
 

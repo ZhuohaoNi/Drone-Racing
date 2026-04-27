@@ -767,6 +767,8 @@ class CircleQuadcopterStrategy:
         )
         self._prev_obs = torch.zeros(self.num_envs, 40, dtype=torch.float, device=self.device)
         self._prev_obs_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._obs_lin_vel_bias_env = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device)
+        self._obs_gate_corner_bias_env = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device)
         self._fixed_obs_delay_steps = max(0, int(getattr(self.cfg, "fixed_obs_delay_steps", 0)))
         self._obs_history = torch.zeros(
             self._fixed_obs_delay_steps + 1, self.num_envs, 40, dtype=torch.float, device=self.device
@@ -1031,6 +1033,25 @@ class CircleQuadcopterStrategy:
 
         x_local = torch.empty(len(ground_rows), device=self.device).uniform_(-3.0, -0.5)
         y_local = torch.empty(len(ground_rows), device=self.device).uniform_(-1.0, 1.0)
+        yaw_noise_range = torch.full((len(ground_rows),), 0.15, device=self.device)
+
+        # Real-start rows keep the same total ground-reset fraction, but narrow
+        # the launch pose around the observed race-start distribution.
+        real_start_frac = min(max(float(getattr(self.cfg, "real_start_reset_ratio", 0.0)), 0.0), 1.0)
+        if real_start_frac > 0.0:
+            real_rows = torch.rand(len(ground_rows), device=self.device) < real_start_frac
+            if real_rows.any():
+                n_real = int(real_rows.sum().item())
+                x_min = float(getattr(self.cfg, "real_start_x_local_min", -2.2))
+                x_max = float(getattr(self.cfg, "real_start_x_local_max", -1.2))
+                y_min = float(getattr(self.cfg, "real_start_y_local_min", -0.25))
+                y_max = float(getattr(self.cfg, "real_start_y_local_max", 0.25))
+                x_min, x_max = sorted((x_min, x_max))
+                y_min, y_max = sorted((y_min, y_max))
+                x_local[real_rows] = torch.empty(n_real, device=self.device).uniform_(x_min, x_max)
+                y_local[real_rows] = torch.empty(n_real, device=self.device).uniform_(y_min, y_max)
+                yaw_noise_range[real_rows] = float(getattr(self.cfg, "real_start_yaw_noise", 0.08))
+
         gate_idx = int(self.env._initial_wp)
         x0_wp = self.env._waypoints[gate_idx, 0]
         y0_wp = self.env._waypoints[gate_idx, 1]
@@ -1042,7 +1063,9 @@ class CircleQuadcopterStrategy:
         x0 = x0_wp - x_rot
         y0 = y0_wp - y_rot
         z0 = torch.empty(len(ground_rows), device=self.device).uniform_(0.03, 0.06)
-        yaw0 = torch.atan2(y0_wp - y0, x0_wp - x0) + torch.empty(len(ground_rows), device=self.device).uniform_(-0.15, 0.15)
+        yaw0 = torch.atan2(y0_wp - y0, x0_wp - x0) + (
+            torch.rand(len(ground_rows), device=self.device) * 2.0 - 1.0
+        ) * yaw_noise_range
 
         default_root_state[ground_rows, 0] = x0
         default_root_state[ground_rows, 1] = y0
@@ -1324,19 +1347,20 @@ class CircleQuadcopterStrategy:
                 dtype=current_obs.dtype,
                 device=self.device,
             )
-            current_obs[:, :3] += vel_bias
+            current_obs[:, :3] += vel_bias + self._obs_lin_vel_bias_env
 
             gate_bias = torch.tensor(
                 getattr(self.cfg, "obs_gate_corner_bias", [0.0, 0.0, 0.0]),
                 dtype=current_obs.dtype,
                 device=self.device,
             )
+            gate_bias = gate_bias + self._obs_gate_corner_bias_env
             if torch.any(gate_bias != 0.0):
                 current_obs[:, 12:24] = (
-                    current_obs[:, 12:24].reshape(self.num_envs, 4, 3) + gate_bias.view(1, 1, 3)
+                    current_obs[:, 12:24].reshape(self.num_envs, 4, 3) + gate_bias.view(self.num_envs, 1, 3)
                 ).reshape(self.num_envs, 12)
                 current_obs[:, 24:36] = (
-                    current_obs[:, 24:36].reshape(self.num_envs, 4, 3) + gate_bias.view(1, 1, 3)
+                    current_obs[:, 24:36].reshape(self.num_envs, 4, 3) + gate_bias.view(self.num_envs, 1, 3)
                 ).reshape(self.num_envs, 12)
 
             yaw_bias_deg = float(getattr(self.cfg, "obs_yaw_bias_deg", 0.0))
@@ -1502,6 +1526,22 @@ class CircleQuadcopterStrategy:
                                              dtype=self.env._idx_wp.dtype)
             next_wp_indices = (waypoint_indices + 1) % num_gates
 
+            focus_ratio = min(max(float(getattr(self.cfg, "segment_focus_reset_ratio", 0.0)), 0.0), 1.0)
+            focus_indices = getattr(self.cfg, "segment_focus_gate_indices", [])
+            if focus_ratio > 0.0 and focus_indices:
+                focus_tensor = torch.as_tensor(
+                    [int(i) % int(num_gates) for i in focus_indices],
+                    device=self.device,
+                    dtype=self.env._idx_wp.dtype,
+                )
+                focus_rows = torch.rand(n_reset, device=self.device) < focus_ratio
+                if focus_rows.any() and focus_tensor.numel() > 0:
+                    sampled = focus_tensor[
+                        torch.randint(0, focus_tensor.numel(), (int(focus_rows.sum().item()),), device=self.device)
+                    ]
+                    next_wp_indices[focus_rows] = sampled
+                    waypoint_indices[focus_rows] = (sampled - 1) % num_gates
+
             beta_dist = torch.distributions.Beta(0.5, 0.5)
             lerp_t = beta_dist.sample((n_reset,)).to(self.device)
 
@@ -1529,6 +1569,15 @@ class CircleQuadcopterStrategy:
             default_root_state[:, 1] = initial_y
             default_root_state[:, 2] = initial_z
             default_root_state[:, 7:] = 0.0
+
+            vel_min = max(0.0, float(getattr(self.cfg, "linear_reset_vel_min", 0.0)))
+            vel_max = max(0.0, float(getattr(self.cfg, "linear_reset_vel_max", 0.0)))
+            if vel_max > 0.0:
+                vel_min = min(vel_min, vel_max)
+                target_vec = next_gate_pos - default_root_state[:, 0:3]
+                target_dir = target_vec / (torch.linalg.norm(target_vec, dim=1, keepdim=True) + 1e-8)
+                speed = torch.empty(n_reset, device=self.device).uniform_(vel_min, vel_max)
+                default_root_state[:, 7:10] = target_dir * speed.unsqueeze(1)
 
             initial_yaw = torch.atan2(y0_wp - initial_y, x0_wp - initial_x)
             yaw_noise = torch.empty(n_reset, device=self.device).uniform_(-0.3, 0.3)
@@ -1602,6 +1651,24 @@ class CircleQuadcopterStrategy:
         self._obs_history[:, env_ids] = 0.0
         self._obs_history_valid[:, env_ids] = False
         if self.cfg.is_train:
+            vel_bias_range = max(0.0, float(getattr(self.cfg, "obs_lin_vel_bias_range", 0.0)))
+            gate_bias_range = max(0.0, float(getattr(self.cfg, "obs_gate_corner_bias_range", 0.0)))
+            if vel_bias_range > 0.0:
+                self._obs_lin_vel_bias_env[env_ids] = (
+                    torch.rand(len(env_ids), 3, device=self.device) * 2.0 - 1.0
+                ) * vel_bias_range
+            else:
+                self._obs_lin_vel_bias_env[env_ids] = 0.0
+            if gate_bias_range > 0.0:
+                self._obs_gate_corner_bias_env[env_ids] = (
+                    torch.rand(len(env_ids), 3, device=self.device) * 2.0 - 1.0
+                ) * gate_bias_range
+            else:
+                self._obs_gate_corner_bias_env[env_ids] = 0.0
+        else:
+            self._obs_lin_vel_bias_env[env_ids] = 0.0
+            self._obs_gate_corner_bias_env[env_ids] = 0.0
+        if self.cfg.is_train:
             effective_replay_mask = replay_mask & (~ground_mask)
             fallback_mask = (~replay_mask) & (~ground_mask)
             spline_mask = fallback_mask if use_spline else torch.zeros_like(fallback_mask)
@@ -1613,6 +1680,21 @@ class CircleQuadcopterStrategy:
             self.env.extras["log"]["Reset/spline_ratio"] = spline_mask.float().mean().item()
             self.env.extras["log"]["Reset/use_spline"] = float(use_spline)
             self.env.extras["log"]["Reset/replay_ratio_cfg"] = self._get_effective_replay_ratio()
+            self.env.extras["log"]["Reset/real_start_fraction_cfg"] = min(
+                max(float(getattr(self.cfg, "real_start_reset_ratio", 0.0)), 0.0), 1.0
+            )
+            self.env.extras["log"]["Reset/segment_focus_ratio_cfg"] = min(
+                max(float(getattr(self.cfg, "segment_focus_reset_ratio", 0.0)), 0.0), 1.0
+            )
+            self.env.extras["log"]["Reset/linear_vel_max_cfg"] = max(
+                0.0, float(getattr(self.cfg, "linear_reset_vel_max", 0.0))
+            )
+            self.env.extras["log"]["Obs/lin_vel_bias_range"] = max(
+                0.0, float(getattr(self.cfg, "obs_lin_vel_bias_range", 0.0))
+            )
+            self.env.extras["log"]["Obs/gate_corner_bias_range"] = max(
+                0.0, float(getattr(self.cfg, "obs_gate_corner_bias_range", 0.0))
+            )
 
         self.env._robot.write_root_link_pose_to_sim(default_root_state[:, :7], env_ids)
         self.env._robot.write_root_com_velocity_to_sim(default_root_state[:, 7:], env_ids)

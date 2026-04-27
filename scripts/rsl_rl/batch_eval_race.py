@@ -734,6 +734,7 @@ def main():
         n_ground = int(ground_arr.sum())
         ground_takeoff_rate = float(takeoff_arr[ground_arr].mean() * 100) if n_ground > 0 else float("nan")
         ground_first_gate_rate = float(first_gate_arr[ground_arr].mean() * 100) if n_ground > 0 else float("nan")
+        ground_success_rate = float(success_mask[ground_arr].mean() * 100) if n_ground > 0 else float("nan")
 
         # Extra-gate detection: clean 3-lap = exactly 3*num_gates passes.
         # If drone goes backward through a gate, gates_passed > target.
@@ -748,6 +749,7 @@ def main():
             print(f"    Ground starts       : {n_ground}/{args_cli.num_envs}")
             print(f"    Takeoff Success     : {ground_takeoff_rate:.1f}% on ground starts ({takeoff_rate:.1f}% overall)")
             print(f"    First-Gate Success  : {ground_first_gate_rate:.1f}% on ground starts ({first_gate_rate:.1f}% overall)")
+            print(f"    Ground 3-Lap SR     : {ground_success_rate:.1f}% on ground starts")
         else:
             print(f"    Takeoff Success     : {takeoff_rate:.1f}%")
             print(f"    First-Gate Success  : {first_gate_rate:.1f}%")
@@ -786,6 +788,7 @@ def main():
             "first_gate_success_pct": first_gate_rate,
             "ground_takeoff_success_pct": ground_takeoff_rate,
             "ground_first_gate_success_pct": ground_first_gate_rate,
+            "ground_success_rate_pct": ground_success_rate,
             "n_ground_starts": n_ground,
             "mean_3lap_time": mean_t,
             "mean_extra_gates": mean_extra,
@@ -814,10 +817,13 @@ def main():
     all_takeoff = np.concatenate([np.array(r["raw_takeoff_success"], dtype=bool) for r in trial_results]) if trial_results else np.array([], dtype=bool)
     all_first_gate = np.concatenate([np.array(r["raw_first_gate_success"], dtype=bool) for r in trial_results]) if trial_results else np.array([], dtype=bool)
     all_ground = np.concatenate([np.array(r["raw_ground_start"], dtype=bool) for r in trial_results]) if trial_results else np.array([], dtype=bool)
+    all_laps = np.concatenate([np.array(r["raw_laps"]) for r in trial_results]) if trial_results else np.array([])
+    all_success = all_laps >= 3
     overall_takeoff = float(all_takeoff.mean() * 100) if len(all_takeoff) > 0 else float("nan")
     overall_first_gate = float(all_first_gate.mean() * 100) if len(all_first_gate) > 0 else float("nan")
     overall_ground_takeoff = float(all_takeoff[all_ground].mean() * 100) if all_ground.any() else float("nan")
     overall_ground_first_gate = float(all_first_gate[all_ground].mean() * 100) if all_ground.any() else float("nan")
+    overall_ground_success = float(all_success[all_ground].mean() * 100) if all_ground.any() else float("nan")
 
     print(f"\n{'#'*60}")
     print(f"  OVERALL SUMMARY")
@@ -873,6 +879,7 @@ def main():
             "first_gate_success_pct": r["first_gate_success_pct"],
             "ground_takeoff_success_pct": r["ground_takeoff_success_pct"] if not np.isnan(r["ground_takeoff_success_pct"]) else None,
             "ground_first_gate_success_pct": r["ground_first_gate_success_pct"] if not np.isnan(r["ground_first_gate_success_pct"]) else None,
+            "ground_success_rate_pct": r["ground_success_rate_pct"] if not np.isnan(r["ground_success_rate_pct"]) else None,
             "n_ground_starts": r["n_ground_starts"],
             "mean_3lap_time": r["mean_3lap_time"] if not np.isnan(r["mean_3lap_time"]) else None,
             "laps_mean": float(np.mean(r["raw_laps"])),
@@ -889,6 +896,7 @@ def main():
             "first_gate_success_pct": overall_first_gate,
             "ground_takeoff_success_pct": overall_ground_takeoff if not np.isnan(overall_ground_takeoff) else None,
             "ground_first_gate_success_pct": overall_ground_first_gate if not np.isnan(overall_ground_first_gate) else None,
+            "ground_success_rate_pct": overall_ground_success if not np.isnan(overall_ground_success) else None,
             "n_ground_starts": int(all_ground.sum()),
             "mean_3lap_time": overall_time if not np.isnan(overall_time) else None,
         }

@@ -23,7 +23,7 @@ TRACK="${TRACK:-powerloop}"
 
 PROJECT="$HOME/Documents/ese6510/ese651_project"
 REPO="$HOME/Documents/ese6510/Drone-Racing-sim2real"
-DEFAULT_BAG_ROOT="$HOME/Documents/ese6510/ese651_project/rosbags"
+DEFAULT_BAG_ROOT="$HOME/Documents/ese6510/ese651_project/rosbags_apr22"
 POWERLOOP_BAG_ROOT="$HOME/Documents/ese6510/ese651_project/rosbags_powerloop_baseline_controller_04_20"
 if [[ "$TRACK" == powerloop* && -d "$POWERLOOP_BAG_ROOT" ]]; then
   DEFAULT_BAG_ROOT="$POWERLOOP_BAG_ROOT"
