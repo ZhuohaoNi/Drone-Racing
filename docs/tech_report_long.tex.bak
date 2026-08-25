@@ -1,0 +1,1221 @@
+\documentclass[10pt, twocolumn]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath, amssymb}
+\usepackage{geometry}
+\geometry{letterpaper, margin=0.75in}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+
+\title{\textbf{Reward, Reset, and Evaluation Design for\\Sim-to-Real Reinforcement Learning:\\A Case Study in Quadrotor Gate Racing}}
+\author{Zhuohao Ni \and Bruce (Yuqian) Zhang}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent
+We report on a two-phase reinforcement learning project in which a single
+quadrotor racing task---a seven-waypoint course containing a
+self-intersecting double-gate structure---was first solved as a pure
+simulation problem and then re-solved as a transfer problem targeting a
+physical vehicle tracked by motion capture. The two phases share a track, a
+simulator, and a learning algorithm, but almost nothing else: the reward
+function, the observation space, the reset distribution, the randomization
+strategy, and the checkpoint-selection rule were each re-derived, and in four
+of five cases inverted, when the simulator stopped being the objective and
+became a hypothesis about a system we could only sample expensively.
+
+In the simulation phase, dense shaping with hand-placed virtual targets
+reached $97.3\%$ three-lap success at a mean time of $15.68$\,s across
+$5000$ randomized environments. In the sim-to-real phase, a sparse
+gate-centric reward with an observation space constrained by the deployment
+interface reached $98.0\%$ success at $18.34$\,s under a re-identified
+dynamics nominal, $100\%$ at $18.10$\,s under a deployment-matched start
+distribution, and completed the physical three-lap evaluation in
+$19.004$\,s, continuing to five correctly ordered laps.
+
+We argue that three design objects usually treated as implementation details
+carry most of the transfer risk: the reward predicate's relationship to the
+task's progress predicate, the reset distribution as an explicit choice of
+where the value function is fit, and the evaluation harness, which failed for
+us in both directions---once by being more diverse than deployment, and once
+by being calibrated so closely to measured hardware that it ranked a policy
+first that managed a single lap in the arena.
+\end{abstract}
+
+\section{Introduction}
+
+Reinforcement learning for agile flight is usually presented as a transfer
+problem: train in simulation, randomize the physics, deploy
+\cite{loquercio2020,kaufmann2023,song2023}. Presented that way, the
+interesting variable is the randomization distribution, and the reported
+result is a success rate. This framing hides the fact that a policy trained
+against a simulator whose fidelity is not in question and a policy trained
+against a simulator standing in for hardware are solutions to different
+optimization problems, even when the Markov decision process is written
+identically.
+
+This report documents a project in which we solved both. The task is fixed
+throughout: fly three laps of a seven-waypoint gate course, in order, without
+crashing. In the \emph{simulation phase}, correctness was defined by the
+simulator, and the rational strategy was to shape the reward as aggressively
+as training stability allowed---dense progress terms, velocity blending that
+induced racing lines implicitly, and hand-placed virtual targets that steered
+the policy through the hardest section of the course. In the
+\emph{sim-to-real phase}, the same simulator became a model whose parameters
+we did not know, whose observation pipeline had a physical counterpart with
+its own biases, and whose evaluation numbers had to predict an outcome we
+could measure only a handful of times.
+
+Four design decisions inverted between the phases:
+
+\begin{enumerate}[nosep, leftmargin=1.4em]
+\item \textbf{Dense $\rightarrow$ sparse reward.} Shaping that specifies
+\emph{how} to fly encodes a trajectory manifold that is optimal only under
+the training dynamics.
+\item \textbf{Exploit tolerance $\rightarrow$ exploit detection.} In
+simulation we deliberately removed a termination rule that punished
+reverse gate passes, because tolerating the mistake trained more smoothly.
+In the transfer phase we added three separate detectors.
+\item \textbf{Randomization as insurance $\rightarrow$ randomization as
+identified uncertainty.} Widening the distribution around an unidentified
+nominal buys robustness in directions that do not matter.
+\item \textbf{Training return $\rightarrow$ deployment metric for checkpoint
+selection.} The standard \code{best\_model.pt} rule---argmax of mean
+training return---selected a checkpoint whose measured three-lap success
+rate was $84.7\%$.
+\end{enumerate}
+
+The fifth change was not an inversion but a constraint: the observation space
+stopped being a free design variable and became an interface contract with
+the deployment controller.
+
+Our contributions are empirical rather than algorithmic. We use standard PPO
+\cite{schulman2017} with generalized advantage estimation \cite{schulman2016}
+throughout, and the learning algorithm is not where the difficulty lay. What
+we offer is a measured account of (i) a reward-hacking taxonomy induced by a
+self-intersecting task graph and a general fix for it, (ii) a reset
+distribution treated as a first-class design object including its interaction
+with actuator state, (iii) a sensitivity analysis that reallocated our
+randomization budget from dynamics to observations, and (iv) two opposite
+failure modes of evaluation-harness design.
+
+\section{Problem Setup}
+
+\subsection{Task and control stack}
+
+The vehicle is a Crazyflie-class quadrotor simulated in Isaac Lab
+\cite{mittal2023}. Rigid-body physics runs at $500$\,Hz. The policy acts at
+$50$\,Hz (decimation $10$) and emits a four-dimensional continuous action
+$a_t = [\,\bar{T}, \omega_x^{\text{des}}, \omega_y^{\text{des}},
+\omega_z^{\text{des}}\,] \in [-1,1]^4$: a normalized collective thrust and
+three body-rate commands. An inner PID rate controller running at $500$\,Hz
+converts the rate commands to a desired wrench, which a first-order motor
+model tracks. Episodes last $30$\,s or terminate on crash; the task caps at
+three laps.
+
+This action interface is the same one exposed by the physical stack, which is
+a precondition for transfer rather than a contribution. It also determines
+what \emph{can} be randomized: everything between the action and the resulting
+wrench---thrust authority, motor time constant, rate-loop gains, aerodynamic
+drag, command latency---is a candidate parameter, and we return to this in
+Section~\ref{sec:dr}.
+
+\subsection{Track geometry and its consequences}
+
+\begin{table}[t]
+\centering
+\small
+\caption{The seven waypoints of the course. Waypoints 2, 3 and 6 occupy the
+central double-gate structure; waypoint 6 is waypoint 3's plane traversed in
+the opposite direction.}
+\label{tab:track}
+\begin{tabular}{@{}c r r r r@{}}
+\toprule
+$i$ & $x$ (m) & $y$ (m) & $z$ (m) & yaw (rad) \\
+\midrule
+0 & $2.000$  & $3.5$  & $0.75$ & $-1.5708$ \\
+1 & $-1.500$ & $3.5$  & $2.00$ & $0.7854$ \\
+2 & $-0.625$ & $0.0$  & $0.75$ & $1.5708$ \\
+3 & $0.625$  & $0.0$  & $0.75$ & $1.5708$ \\
+4 & $-1.500$ & $-3.5$ & $2.00$ & $2.3560$ \\
+5 & $2.000$  & $-3.5$ & $0.75$ & $-1.5708$ \\
+6 & $0.625$  & $0.0$  & $0.75$ & $-1.5708$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:track} lists the course. Six of the seven waypoints are
+ordinary; the interesting structure is central. Waypoints 2 and 3 are two
+gate planes $1.25$\,m apart at the same altitude and the same heading, and
+waypoint 6 is \emph{the same plane as waypoint 3, entered from the opposite
+side}. The course therefore self-intersects: the state
+$(\text{position}, \text{velocity})$ does not determine which waypoint the
+agent is pursuing, and a single physical gate crossing can be a legitimate
+pass, an illegitimate reverse pass, or a pass toward a different waypoint
+index, depending on history.
+
+Nearly every difficulty in this project traces back to that fact. It makes
+gate-pass detection a stateful predicate rather than a geometric test; it
+creates a family of reward exploits that shortcut the intended path
+(Section~\ref{sec:hacking}); and because the drone must gain and lose
+$1.25$\,m of altitude in the shortest segment of the course, it is where
+dense shaping and dynamics mismatch both bite hardest.
+
+A gate pass at waypoint $i$ is detected in the gate's local frame: the
+agent's $x$-coordinate must cross from positive to negative between
+consecutive steps while the $(y,z)$ coordinates lie inside the opening. We
+write the half-side of the opening used for this test as $s$, and note here
+that the sim-to-real phase splits $s$ into two different values for two
+different purposes---a point developed in Section~\ref{sec:hacking}.
+
+\subsection{Evaluation protocols}
+\label{sec:protocols}
+
+Because we report numbers from four distinct protocols, we name them once.
+
+\begin{itemize}[nosep, leftmargin=1.2em]
+\item \textbf{Self-evaluation (simulation phase).} Batch rollouts across
+thousands of parallel environments, each drawing independent perturbations of
+thrust-to-weight, aerodynamic drag, and rate-loop gains. Reports three-lap
+success rate and time distribution.
+\item \textbf{External evaluation (simulation phase).} An independently
+specified protocol with fixed perturbation bounds and a reference time of
+$16.06$\,s, applied to a submitted policy. We report our own measurements
+against its bounds rather than its outputs.
+\item \textbf{Batch evaluation (sim-to-real phase).} Reset-diverse rollouts
+under the re-identified dynamics nominal, used as the primary robustness
+screen.
+\item \textbf{Physical evaluation.} Timed three-lap runs on the real vehicle
+in a motion-capture arena, with lap timing recovered post hoc from flight
+logs under a strict gate-ordering rule.
+\end{itemize}
+
+\textbf{These protocols are not mutually comparable, and we do not compare
+them.} In particular, simulation-phase times and sim-to-real-phase times
+differ by roughly $2.7$\,s not because the policy got worse but because the
+two phases run under different dynamics nominals: the simulation phase uses
+the simulator's default thrust-to-weight ratio of $3.15$, while the
+sim-to-real phase re-centers it on the value identified from flight logs
+(Section~\ref{sec:twr}). A policy with less thrust authority is slower; that
+is physics, not regression.
+
+\section{Learning Algorithm and Infrastructure}
+
+We use PPO \cite{schulman2017} with the clipped surrogate objective, an
+entropy bonus, and GAE \cite{schulman2016} ($\gamma = 0.99$,
+$\lambda = 0.95$), training across $8192$--$16384$ parallel environments in
+the style of massively parallel on-policy learning \cite{rudin2022}. Three
+implementation choices mattered enough to record.
+
+\textbf{KL-adaptive learning rate.} Early prototypes exhibited late-training
+policy collapse around $2500$ iterations. We adopted a schedule that
+estimates the approximate KL divergence per update and halves the learning
+rate when it exceeds $2\bar{d}_{\mathrm{KL}}$ ($\bar{d}_{\mathrm{KL}} =
+0.01$), scaling up by $1.5\times$ when it falls below
+$\bar{d}_{\mathrm{KL}}/2$, clamped to $[10^{-5}, 10^{-2}]$. This removed the
+collapse mode in the simulation phase; it did not prevent the reward-driven
+collapses described in Section~\ref{sec:sim-reward}, which were a shaping
+problem rather than a step-size problem.
+
+\textbf{Vectorized advantage computation.} GAE was refactored so that all TD
+residuals $\delta_t$ are computed in a single batched GPU pass, leaving only
+the backward recursion sequential. At $16384$ environments the original
+per-step formulation was dominated by kernel launch overhead.
+
+\textbf{Configuration differences between phases.} Table~\ref{tab:ppo} lists
+them. Two are consequences of decisions made later in this report and are
+worth flagging early. The rollout length increase from $24$ to $64$ steps is
+forced by the reward becoming sparse: at $50$\,Hz, a $24$-step rollout spans
+$0.48$\,s, which frequently contains no gate-pass event at all, so most
+advantage estimates carry no task signal. And \code{empirical\_normalization}
+is disabled in the sim-to-real phase not because it hurts but because the
+running observation normalizer is a \emph{learned component of the policy}
+that the deployment controller never receives. An earlier attempt to
+substitute hand-chosen fixed normalization constants failed to recover the
+same performance, which we read as evidence that the normalizer's running
+statistics were doing real work---work we then had to forgo.
+
+\begin{table}[t]
+\centering
+\small
+\caption{PPO and network configuration by phase.}
+\label{tab:ppo}
+\begin{tabular}{@{}l r r@{}}
+\toprule
+& Simulation & Sim-to-real \\
+\midrule
+Actor hidden dims    & $[256,256]$ & $[512,512,256,128]$ \\
+Critic hidden dims   & $[512,256,$ & $[512,512,256,$ \\
+                     & $128,128]$  & $256,128,128]$ \\
+Activation           & ELU & ELU \\
+Steps per env        & $24$ & $64$ \\
+Mini-batches         & $4$ & $8$ \\
+Learning rate        & $5\!\times\!10^{-4}$ & $1\!\times\!10^{-4}$ \\
+Entropy coefficient  & $0.005$ & $0.01$ \\
+Empirical obs. norm. & enabled & \textbf{disabled} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The deeper critic in the sim-to-real phase follows the observation of
+Pasumarti et al.\ \cite{pasumarti2025} that value estimation under sparse
+racing objectives benefits from more capacity than the policy needs; the
+actor width is instead fixed by the deployment controller's network
+definition.
+
+\section{Simulation Phase}
+
+\subsection{Observation space}
+
+The simulation-phase policy receives a $31$-dimensional ego-centric
+observation, all spatial quantities in the body frame: body linear and
+angular velocity ($6$); the gravity vector projected into the body frame
+($3$); current, next, and next-next gate positions ($9$); entry-direction
+normals for the current and next gates ($6$); the normalized waypoint index
+($1$); $\sin$ and $\cos$ of the yaw error to the target gate ($2$); and the
+previous action ($4$).
+
+Two choices are worth isolating. Replacing the unit quaternion with the
+body-frame gravity vector removes a dimension while preserving all tilt
+information the task needs, and eliminates the double-cover sign ambiguity.
+The normalized waypoint index is a deliberate concession to the track's
+self-intersection: since position and velocity do not identify which waypoint
+is active, the index restores the Markov property that the geometry destroys.
+Without it the policy cannot in principle distinguish waypoint 3 from
+waypoint 6.
+
+\subsection{Reward and the collapse modes it produced}
+\label{sec:sim-reward}
+
+\begin{table}[t]
+\centering
+\small
+\caption{Simulation-phase reward terms.}
+\label{tab:sim-reward}
+\begin{tabular}{@{}l r p{3.5cm}@{}}
+\toprule
+Term & Scale & Definition \\
+\midrule
+Gate pass       & $200.0$ & Indicator of a valid pass \\
+Progress        & $50.0$  & $\Delta$ distance to target, clamped $[-1,1]$ \\
+Racing-line vel.& $8.0$   & Blended velocity projection, clamped $[-2,8]$ \\
+Orientation     & $-1.0$  & $|\phi| + |\theta|$ when $>0.5$\,rad \\
+Smoothness      & $-0.2$  & $\|a_t - a_{t-1}\|_2$ \\
+Contact         & $-1.0$  & Per-step contact indicator \\
+Termination     & $-10.0$ & Replaces the reward on death \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:sim-reward} gives the converged configuration. It is the
+result of a search whose failures are more informative than its endpoint.
+
+Attempts to add an explicit heading-alignment term ($\cos$ of yaw error,
+scale $0.5$--$2.0$) consistently degraded performance, and did so in a
+diagnosable way. Combined with a velocity reward at scale $5.0$, whose
+episodic contribution reached ${\sim}750$ against the gate-pass term's
+${\sim}200$, the policy became speed-dominated: it accelerated toward each
+gate at maximum rate and could not decelerate for the tight transition out of
+the central structure. Gate-pass reward collapsed from ${\sim}200$ to
+${\sim}40$ while velocity reward rose to ${\sim}150$. The lesson is a
+quantitative one about shaping: the relevant comparison is not between reward
+\emph{scales} but between their \emph{integrated episodic contributions},
+and a dense term integrated over a $30$\,s episode can silently dominate a
+sparse term worth $200$ per event.
+
+Relaxing the orientation penalty produced a different failure. At scale
+$-0.5$ with a $1.0$\,rad threshold, the policy completed laps but developed a
+tumbling recovery at the exit of the central structure. At $-2.0$ with a
+$0.5$\,rad threshold it was stable but slow. The converged $-1.0$ at
+$0.5$\,rad permits aggressive banking while penalizing attitudes from which
+the rate controller cannot recover.
+
+\subsection{Shaping as implicit path planning}
+
+Rather than specifying a geometric racing line, we shaped the velocity reward
+to induce one. Let $\hat{d}_{\text{cur}}$ and $\hat{d}_{\text{next}}$ be unit
+vectors from the vehicle to the current target and to the following gate. The
+velocity term rewards
+\begin{equation}
+r_{\text{vel}} \propto
+\alpha \, \langle v, \hat{d}_{\text{cur}} \rangle +
+(1-\alpha) \, \langle v, \hat{d}_{\text{next}} \rangle ,
+\end{equation}
+with $\alpha = 5/8$ on ordinary gates. Because part of the reward points at
+the \emph{next} gate before the current one is reached, the optimal
+trajectory cuts toward the inside of each corner. This produced smooth
+curving racing lines with no path parameterization, no spline, and no tuning
+per corner.
+
+The blend is a genuine optimization knob with a stability boundary. Reducing
+$\alpha$ to $4/8$---an apparently mild change---caused a late-training
+collapse at approximately $3000$ iterations, with three-lap success dropping
+from ${\sim}90\%$ to zero and mean lap time spiking to ${\sim}20$\,s before
+partially recovering to a degraded plateau. The next-gate component pulls the
+vehicle far enough off the current gate's approach at high speed to cause
+misses, and once misses become common the sparse gate reward degrades faster
+than the dense velocity term, which is a self-reinforcing dynamic. We report
+this because $\alpha$ looks like a hyperparameter and behaves like a phase
+boundary.
+
+At the central structure ($i=3$) the blend is disabled and the term uses the
+current target only, for reasons given next.
+
+\subsection{Virtual targets}
+
+The gate-pass predicate is computed from the vehicle's pose in the gate
+frame, and is therefore independent of whatever position the reward function
+happens to be aiming at. This decoupling---a target variable
+\code{desired\_pos\_w} distinct from the gate itself---lets us steer shaping
+without altering the task definition, and we exploited it heavily.
+
+The central structure was designed to force a vertical loop. We found that a
+path around the \emph{side} of the structure was faster and implemented it as
+a two-phase virtual target. While pursuing waypoint 2, the target is
+overridden to an apex at $[0, -0.3, 1.6]$, which pulls the vehicle upward
+early; it clips through waypoint 2's opening while already climbing, without
+ever aiming at that gate's center. While pursuing waypoint 3, the target
+remains the apex until either $z > 1.3$\,m or the distance to the apex falls
+below $0.8$\,m, at which point it switches to an offset point at
+$[0.425, 0, 0.75]$, producing a dive past the side of the structure and
+straight through the opening. An earlier three-phase variant with an
+intermediate pre-entry waypoint was slower and was removed.
+
+This technique is powerful and does not survive contact with hardware. It
+encodes a specific solution to a specific geometry under specific dynamics,
+which is exactly the property we later had to give up.
+
+\subsection{Reset distribution}
+
+\begin{table}[t]
+\centering
+\small
+\caption{Simulation-phase reset distribution.}
+\label{tab:sim-reset}
+\begin{tabular}{@{}p{2.1cm} p{5.3cm}@{}}
+\toprule
+Component & Specification \\
+\midrule
+Target waypoint & Uniform over all seven, so every segment trains equally. \\
+\addlinespace
+Spawn pose & Behind the target at a distance ramping $[1.0,2.0] \rightarrow [1.5,4.0]$\,m over $800$ iterations; lateral $\pm1.0$\,m, vertical $\pm0.5$\,m, yaw $\pm0.3$\,rad; altitude clamped above $0.15$\,m. \\
+\addlinespace
+Mid-segment ($40\%$) & Uniform at $20$--$80\%$ of the way between consecutive gates. \\
+\addlinespace
+Ground (${\sim}20\%$) & Two independent ${\sim}10\%$ mechanisms placing the vehicle at $z=0.05$\,m, one retaining velocity and one at rest. \\
+\addlinespace
+Velocity init.\ ($50\%$) & Half of airborne spawns receive $0.5$--$3.0$\,m/s of forward velocity. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:sim-reset} gives the distribution. One entry deserves
+emphasis: raising the mid-segment spawn rate from $25\%$ to $40\%$ moved
+three-lap success from $86.7\%$ to $96.3\%$. This was the single largest
+measured improvement of the simulation phase, larger than any reward change,
+and it was obtained by altering where episodes begin rather than what they
+reward.
+
+The mechanism is straightforward once stated. On-policy methods fit the value
+function only on the state distribution induced by the initial-state
+distribution $\rho_0$ and the current policy $\pi$. Spawning behind gates
+trains gate approaches well and gate-to-gate \emph{transitions} poorly,
+because transition states are visited only by trajectories that have already
+succeeded at everything preceding them. Mid-segment spawning removes that
+dependency. We return to this idea in Section~\ref{sec:reset}, where it
+becomes a design object in its own right.
+
+\subsection{Randomization and fine-tuning}
+
+Physical parameters---thrust-to-weight, aerodynamic drag coefficients, and
+rate-loop PID gains---were resampled per environment at every reset,
+following standard dynamics randomization practice
+\cite{tobin2017,peng2018}. The final simulation-phase model was produced in
+two stages: a baseline trained for $5000$ iterations at $16384$ environments,
+then fine-tuned for a further $2000$ iterations under deliberately widened
+bounds (thrust-to-weight $\pm8\%$, drag $0.3$--$2.5\times$, PID $\pm25\%$ on
+$k_p, k_i$ and $\pm40\%$ on $k_d$) with the entropy coefficient reduced from
+$0.005$ to $0.001$ to sharpen the policy.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Paired evaluation over $1000$ environments with identical
+perturbation draws, bucketed by baseline performance.}
+\label{tab:paired}
+\begin{tabular}{@{}l r@{}}
+\toprule
+Baseline bucket & Fine-tuned $\Delta$ time \\
+\midrule
+$<15.6$\,s (baseline's best)      & $+0.87$\,s (worse) \\
+$15.9$--$16.1$\,s (borderline)    & $-1.32$\,s \\
+$16.1$--$16.4$\,s (at risk)       & $-0.99$\,s \\
+$\geq 16.4$\,s (baseline's worst) & $-1.38$\,s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The comparison we found most instructive was a \emph{paired} evaluation:
+$1000$ environments with identical perturbation draws presented to both
+models. Rank correlation between the two models' per-environment times was
+essentially zero (Pearson $r = -0.016$, Spearman $\rho = 0.048$).
+Fine-tuning under wider bounds did not translate the performance
+distribution; it \emph{rotated} it. Table~\ref{tab:paired} shows the
+structure: the fine-tuned model is worse exactly where the baseline was best
+and better everywhere else, converting $168$ environments---$78.5\%$ of the
+baseline's failures---into passes while introducing $137$ new ones, for a net
+gain of $31$.
+
+This is worth stating as a general caution. A headline success-rate
+improvement of $2.4$ percentage points concealed $305$ environments whose
+outcome changed, in both directions. Aggregate metrics on independently
+randomized environments cannot distinguish a uniform improvement from a
+reshuffle, and the two have very different implications for deployment: a
+reshuffle means the new model has new blind spots that the old model's
+evaluation history says nothing about.
+
+\subsection{Simulation-phase results}
+
+Under self-evaluation across $5000$ independently randomized environments,
+the fine-tuned model achieved $97.3\%$ three-lap success at a mean time of
+$15.68$\,s (median $15.58$\,s, $\sigma = 0.50$\,s, best $14.82$\,s, worst
+$21.26$\,s), against the baseline's $94.9\%$ and $15.78$\,s
+($\sigma = 0.54$\,s). Measured against the external protocol's $16.06$\,s
+reference, $84.0\%$ of environments finished inside the reference time,
+against $82.0\%$ for the baseline.
+
+\section{The Sim-to-Real Phase: Interface Constraints}
+
+Transfer changed what was adjustable before it changed what was optimal.
+
+\subsection{The observation space becomes a contract}
+
+The deployment controller computes its own observation vector from
+motion-capture data. Any quantity the policy consumes must be reproducible by
+that code, which eliminated most of the simulation-phase observation design.
+Engineered features---yaw error, normalized waypoint index, gate
+normals---were replaced by raw geometry:
+\begin{equation*}
+\underbrace{v_b}_{3} \;\big|\;
+\underbrace{\mathrm{vec}(R_{b \rightarrow w})}_{9} \;\big|\;
+\underbrace{C^{\text{cur}}_b}_{12} \;\big|\;
+\underbrace{C^{\text{next}}_b}_{12} \;\big|\;
+\underbrace{a_{t-1}}_{4}
+\end{equation*}
+for a total of $40$ dimensions, where $C_b$ denotes the four corners of a
+gate expressed in the body frame, computed identically on both sides as
+$C_w = S R_g^\top + p_g$ followed by $C_b = (C_w - p_d) R_b$.
+
+Two remarks. First, the full rotation matrix replaces the gravity vector:
+having given up the yaw-error feature, the policy needs complete attitude,
+and a rotation matrix is a continuous representation without the sign
+ambiguity of quaternions. Second, twelve numbers per gate is a redundant
+encoding of a four-degree-of-freedom object, and we adopted it not because it
+is efficient but because it is what the deployment controller already
+computed. \emph{A feature that cannot be reproduced by the deployment stack
+is not available at any price}, and feature engineering that helps in
+simulation becomes a liability once the feature pipeline must exist twice and
+agree.
+
+Including the previous action follows Kaufmann et al.\ \cite{kaufmann2023}:
+under actuator lag, the previous command carries information about the
+current actuator state that the kinematic observation does not.
+
+\section{Sparse Reward Redesign}
+
+\begin{table}[t]
+\centering
+\small
+\caption{Sim-to-real-phase reward terms. Dense progress remains available but
+is disabled by default.}
+\label{tab:s2r-reward}
+\begin{tabular}{@{}l r p{3.3cm}@{}}
+\toprule
+Term & Scale & Definition \\
+\midrule
+Gate pass        & $200.0$ & Indicator, inner opening \\
+Lap incomplete   & $-0.05$ & Constant, per step \\
+Rate reg.\ (r/p) & $-1.0$  & $\omega_x^2 + \omega_y^2$ (commanded) \\
+Rate reg.\ (yaw) & $-0.5$  & $\omega_z^2$ (commanded) \\
+Action smoothness& $-0.1$  & $\|a_t - a_{t-1}\|_2^2$ \\
+Contact          & --      & Per-step contact indicator \\
+Termination      & --      & Replaces the reward on death \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:s2r-reward} gives the redesigned reward. Progress, velocity
+blending, orientation penalty, and the virtual-target machinery were all
+removed. The argument, following the sparse-objective results of
+\cite{pasumarti2025} and the general observation that shaping alters the
+optimal policy unless it is potential-based \cite{ng1999}, is that dense
+terms specify \emph{how} to fly and thereby encode a trajectory manifold that
+is optimal only under the training dynamics. When those dynamics shift, the
+policy has been given no reason to have learned anything off that manifold.
+A sparse objective specifies \emph{what} to achieve and leaves the solution
+free to be re-derived.
+
+Two results from this redesign generalize beyond our setting.
+
+\textbf{Sparse bonuses must beat integrated, not instantaneous, costs.} Our
+first sparse configuration set the gate-pass bonus to $10.0$ and collapsed at
+approximately $200$ iterations: the policy learned to hover. With a constant
+per-step penalty and a per-step contact penalty always active, and a gate
+requiring on the order of a second to reach, the expected integrated cost of
+\emph{attempting} a gate exceeded the bonus for succeeding. Raising the bonus
+to $200.0$ fixed it. The design condition is that a sparse bonus must exceed
+the integrated negative cost accumulated over the expected time to earn it,
+which for a $30$\,s episode at $50$\,Hz is a factor of hundreds away from the
+instantaneous comparison one is tempted to make.
+
+\textbf{Command regularization is a calibrated speed dial.} We ablated the
+roll/pitch and yaw rate penalties from $(-1.0, -0.5)$ to $(-2.0, -0.05)$,
+motivated by the observation that in flight logs the yaw rate stays low
+throughout while roll and pitch drive the aggressive transients---so the
+default split under-penalized the axis that produced jerk and
+over-penalized one that did not. The rebalanced policy was the smoothest we
+trained, with the lowest mean tilt and mean body rate of any policy we flew,
+and it was reliably slower by roughly $0.6$\,s per lap. This is an exchange
+rate, not a failure: the term buys attitude margin at a measurable price in
+time, and it is the correct knob when margin is the binding constraint.
+
+\section{Specification Gaming on a Self-Intersecting Task Graph}
+\label{sec:hacking}
+
+Because waypoints 2, 3 and 6 share the central structure and waypoint 6
+reuses waypoint 3's plane in reverse, a naive gate-pass predicate admits
+several ways to earn credit without flying the intended course. We
+encountered three, each requiring a different fix.
+
+\textbf{Reverse crossing of the current target.} The vehicle crosses its
+target gate's plane in the wrong direction. Detected by the mirrored
+predicate (negative to positive $x$ within bounds) and treated as
+termination. A five-step cooldown after a legitimate pass is required, since
+the frame recomputation at the moment of passing otherwise produces false
+positives.
+
+\textbf{Plane-straddling at the loop gate.} A subtler exploit: the vehicle
+approaches waypoint 3, crosses the plane by a few centimetres so that
+$x_{t-1} > 0$ and $x_t \leq 0$, and immediately reverses out. It collects the
+pass bonus without traversing the structure. The fix conditions the pass on
+having genuinely been in the approach zone: we track
+$\max_{\tau \leq t} x_\tau$ since the target last changed and require it to
+exceed a threshold. Critically, we apply this \emph{only} at waypoint 3.
+Applying it globally caused visibly valid passes elsewhere on the course to
+go uncounted, which corrupted our own evaluation.
+
+\textbf{Backtracking through the previous gate.} After passing waypoint 2 the
+vehicle reverses back through waypoint 2's plane to re-enter the $+x$
+approach region, then proceeds to waypoint 3---a cheap way to restart the
+approach without a proper detour, available precisely because waypoints 2 and
+3 share a structure and a heading. The existing checks did not see it: they
+monitor only the \emph{current} target, and once waypoint 2 was passed
+nothing in the reward function cared about its plane any longer. The fix is a
+generic previous-gate detector, computing the vehicle's position in the frame
+of waypoint $(i-1) \bmod 7$ each step and terminating on a
+negative-to-positive crossing within bounds. It requires three guards: skip
+while no gate has yet been passed, skip on the step a gate is passed (the
+previous-gate index has just changed, making the buffered comparison
+meaningless), and test only within the opening, so that flying around the
+outside of a passed gate never triggers.
+
+\subsection{Splitting the reward predicate from the progress predicate}
+
+The three fixes above are patches. The structural change that made them
+coherent was to stop using one predicate for two purposes.
+
+Our earlier configurations used a single gate half-side $s$ for everything.
+Shrinking $s$ to encourage conservative center-line flight therefore also
+shrank the region in which the agent's \emph{target advanced}, producing
+episodes where the vehicle physically flew through a gate and the task did
+not acknowledge it. That is not conservatism; it is a corrupted task
+definition.
+
+We now maintain two predicates over the same crossing event:
+\begin{itemize}[nosep, leftmargin=1.2em]
+\item a \textbf{progress predicate} at the physical half-side ($0.5$\,m),
+which advances the target index, increments the lap counter, updates the
+desired position, and drives termination logic; and
+\item a \textbf{reward predicate} at a virtual inner half-side
+($s/2 = 0.35$\,m), which alone controls the gate-pass bonus and insertion
+into the replay buffer described in Section~\ref{sec:reset}.
+\end{itemize}
+
+The agent is thus paid for flying through the middle while the task counts
+what physically happened. We regard this as the most portable idea in this
+report: whenever a shaping term and a task-progress condition are computed
+from the same geometric test, tightening the shaping silently redefines the
+task, and the two should be separated at the outset.
+
+A related instance: we added the option to zero the dense progress term at
+selected waypoints, used at the loop gate, because Euclidean distance to a
+gate center shrinks as the vehicle approaches from the \emph{wrong} side as
+readily as from the right one. Dense progress rewards are not
+direction-aware, and on a self-intersecting course that is exploitable.
+
+\subsection{The same exploit, two correct answers}
+
+In the simulation phase we experimented with strict termination on reverse
+and wrong-side passes and \emph{deliberately removed it}. Allowing the agent
+to make the mistake without instantly ending the episode produced noticeably
+smoother and more stable training. In the sim-to-real phase we added three
+detectors.
+
+Both decisions were right for their regime, and the difference is what the
+exploit costs. Where the simulator defines correctness, an exploit costs a
+suboptimal trajectory, and the termination that suppresses it costs
+gradient signal and training stability---frequently a bad trade. Where the
+simulator stands in for hardware, an exploit costs a policy that has learned
+a behavior the real geometry will not support, discovered at deployment. The
+same reward-hacking observation therefore licenses opposite interventions
+depending on whether simulator fidelity is in question, and we think this is
+under-appreciated in discussions of specification gaming
+\cite{amodei2016}, which typically treat exploits as unconditionally
+undesirable.
+
+\section{The Reset Distribution as a Design Object}
+\label{sec:reset}
+
+Having found in the simulation phase that reset placement outweighed reward
+tuning, we treated $\rho_0$ explicitly in the transfer phase. The
+distribution is a mixture of four components.
+
+\textbf{Gate-pass replay ($30\%$ nominal).} Following the practice of
+resetting to states observed during successful task execution
+\cite{kaufmann2023,song2023}, we maintain a per-waypoint ring buffer keyed by
+the \emph{next} target gate. Whenever the reward predicate fires, the full
+root state (position, orientation, linear and angular velocity) and the
+previous action are written to the buffer for the newly acquired target. At
+reset, a state is drawn and perturbed: $\pm0.15$\,m horizontally, $\pm0.10$\,m
+vertically (clamped above $0.15$\,m), $\pm0.20$\,m/s linear velocity,
+$\pm0.50$\,rad/s angular velocity, $\pm0.20$\,rad yaw. The buffer contains
+only states the policy actually reached, so the distribution tracks the
+policy as it improves.
+
+\textbf{Actuator-state reconstruction.} A detail we consider necessary rather
+than optional: replaying a rigid-body state into a system with actuator
+dynamics does not replay the state. The rotor speeds at the recorded instant
+were not at rest, and initializing them to zero injects a spin-up transient
+into precisely the states we selected for being important. We therefore
+recompute the desired wrench from the replayed previous action, invert the
+mixer to obtain motor-speed targets, and initialize both the commanded and
+actual motor speeds to that value, so that the first step after reset is
+dynamically continuous with the trajectory the state was drawn from.
+
+\textbf{Ground starts ($20\%$ nominal).} The physical evaluation begins with
+the vehicle at rest on the floor, so a fraction of episodes start at
+$z \in [0.03, 0.06]$\,m behind the first gate, at rest, with
+$x \in [-3.0, -0.5]$\,m and $y \in [-1.0, 1.0]$\,m in the gate's local frame
+and $\pm0.15$\,rad of yaw noise. A narrowed variant restricts this to
+$x \in [-2.2,-1.2]$\,m, $y \in [-0.25, 0.25]$\,m and $\pm0.08$\,rad, matching
+the observed launch pose in the arena.
+
+\textbf{Geometric fallback.} Remaining episodes interpolate between
+consecutive gates with $t \sim \mathrm{Beta}(0.5, 0.5)$, which concentrates
+mass near gates and thins it mid-segment, plus $\pm0.3$\,m lateral and
+$\pm0.2$\,m vertical noise perpendicular to the segment.
+
+We additionally implemented staged ramping of the replay fraction (zero
+before a warmup iteration, linear to full thereafter), on the reasoning that
+an empty or unrepresentative buffer early in training supplies states the
+policy cannot yet handle.
+
+\subsection{A cautionary ablation}
+
+The geometric fallback spawns at rest, which is unlike race flight, so we
+added an option to give it velocity toward the target. At a cap of
+$1.2$\,m/s the policy became measurably faster but lost success rate and grew
+a worse time tail; at $0.6$\,m/s success rate recovered ($98.3\%$) but the
+speed gain vanished entirely (mean $19.46$\,s, against $18.34$\,s for the
+base). We had framed this as distribution matching. The result says
+otherwise: rather than making training states more realistic, the higher
+reset velocity trained a more aggressive state distribution, buying speed by
+shifting the policy rather than by correcting a mismatch. The distinction
+matters, and success rate at fixed mean time is what separates them.
+
+\section{Randomization as Identified Uncertainty}
+\label{sec:dr}
+
+\subsection{Available parameters}
+
+The transfer-phase environment exposes per-environment randomization of the
+transition model---thrust-to-weight, aerodynamic drag, rate-loop $k_p, k_i,
+k_d$, vehicle mass, motor time constant, and action latency (0--2 policy
+steps, sampled or held fixed)---and of the observation map: per-channel
+Gaussian noise (default $\sigma = 0.05$\,m/s on body velocity, $0.01$ on
+rotation-matrix entries, $0.02$\,m on gate corners, none on the previous
+action), observation latency, and systematic biases on body-frame velocity,
+gate-corner position, and yaw. All are resampled at reset. The distinction
+between the two groups turned out to matter more than any individual range.
+
+\subsection{Sensitivity analysis as budget allocation}
+
+\begin{table*}[t]
+\centering
+\small
+\caption{Deterministic robustness sweep, $768$ ground-start episodes per
+scenario, single checkpoint. Takeoff and first-gate success were $100\%$ in
+all thirteen scenarios; the separating signal is entirely in later trajectory
+execution.}
+\label{tab:sweep}
+\begin{tabular}{@{}l l r r r@{}}
+\toprule
+Scenario & Group & 3-lap SR (\%) & Mean 3-lap (s) & $\Delta$SR (pp) \\
+\midrule
+\code{control\_nominal}        & control & $96.6$ & $18.65$ & $+0.0$ \\
+\code{control\_thrust\_0p90}   & control & $100.0$ & $18.33$ & $+3.4$ \\
+\code{control\_thrust\_1p10}   & control & $96.2$ & $18.64$ & $-0.4$ \\
+\code{control\_latency\_20ms}  & control & $96.9$ & $18.40$ & $+0.3$ \\
+\code{control\_latency\_40ms}  & control & $99.9$ & $18.41$ & $+3.3$ \\
+\code{control\_rate\_gain\_0p85} & control & $95.6$ & $18.65$ & $-1.0$ \\
+\code{control\_rate\_gain\_1p15} & control & $99.5$ & $18.38$ & $+2.9$ \\
+\midrule
+\code{obs\_vel\_noise\_0p05}   & observation & $96.5$ & $18.81$ & $-0.1$ \\
+\code{obs\_yaw\_bias\_5deg}    & observation & $99.9$ & $18.30$ & $+3.3$ \\
+\code{obs\_delay\_20ms}        & observation & $98.2$ & $18.40$ & $+1.6$ \\
+\code{obs\_delay\_40ms}        & observation & $100.0$ & $18.39$ & $+3.4$ \\
+\code{obs\_gate\_bias\_5cm}    & observation & $92.4$ & $20.76$ & $-4.2$ \\
+\textbf{\code{obs\_vel\_bias\_0p20}} & observation & $\mathbf{2.9}$ & $\mathbf{28.15}$ & $\mathbf{-93.8}$ \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+Before committing randomization budget we ran a deterministic, evaluation-only
+sweep over thirteen perturbation scenarios, $768$ ground-start episodes each,
+on a single checkpoint (Table~\ref{tab:sweep}). The question was narrow: is
+this policy more likely to fail from moderate control mismatch or from
+systematic observation mismatch?
+
+The answer was unambiguous. Every transition-model perturbation we tested
+left three-lap success at or above $95.6\%$, including a $10\%$ thrust error,
+a $40$\,ms command latency, and $\pm15\%$ rate-loop gain error. Zero-mean
+observation noise at the trained magnitude was likewise harmless
+($96.5\%$). But a constant $0.20$\,m/s bias on the observed body-frame
+velocity reduced success to $2.9\%$, and a $5$\,cm systematic offset on gate
+corners cost $4.2$ points and $2.1$\,s.
+
+The interpretation we favor is that a closed loop rejects transition-model
+error as a matter of course---that is what feedback is for---whereas a
+systematic observation bias is an unmodeled, unobservable state offset that
+the policy cannot detect and has no mechanism to correct. Randomizing
+dynamics teaches robustness to a disturbance the controller was already going
+to reject; randomizing observation \emph{bias} teaches robustness to
+something it cannot.
+
+Two boundaries on this claim. It is a sim-side sensitivity result for one
+checkpoint, not evidence that the physical system carries a $0.20$\,m/s
+velocity bias. And several control scenarios scored slightly \emph{above}
+nominal, which is within run-to-run variation and should not be read as a
+trend. What survives is the ordering: for this policy class, systematic
+observation bias is the first-order risk and moderate actuator mismatch is
+not.
+
+\subsection{Re-centering the transition model}
+\label{sec:twr}
+
+Randomization defends against parameters near the center of its distribution.
+It cannot defend against a center that is wrong.
+
+Analysis of flight logs indicated an effective vehicle mass near $64$\,g,
+against the simulator's nominal $30$\,g, while the deployed controller maps
+full policy thrust to approximately $1.174$\,N. The implied effective
+thrust-to-weight ratio is
+\begin{equation}
+\mathrm{TWR}_{\text{real}} \approx
+\frac{1.174\ \mathrm{N}}{0.064\ \mathrm{kg} \times 9.81\ \mathrm{m/s^2}}
+\approx 1.87 ,
+\end{equation}
+against a simulator nominal of $3.15$. Our widest randomization to that point
+was $\pm8\%$, spanning $[2.90, 3.40]$. \textbf{The physical operating point
+was not in a low-density tail of the training distribution; it was outside
+its support entirely.} No width of randomization around $3.15$ would have
+reached it, and no reward, architecture, or reset change could have
+compensated: the policy was learning to exploit control authority the vehicle
+did not have.
+
+Re-centering the nominal on $1.87$ with a narrow $\pm6\%$ band produced
+$98.0\%$ three-lap success at $18.34$\,s ($\sigma = 0.48$\,s) over $768$
+environments. Notably, an \emph{untrained-for} sanity check---running the old
+checkpoint under the new nominal---already completed three laps, at
+$21.16$\,s, which is what gave us confidence the direction was right before
+committing to a full retrain.
+
+The cost is specialization. The re-centered policy performs poorly at the
+original nominal, terminating around seven gates on representative rollouts.
+This is the robustness--specialization trade documented by Ferede et al.\
+\cite{ferede2025}: less randomization transfers faster when the nominal is
+correct, and fails outright when it is not. We accepted the trade because the
+deployment thrust scale is fixed and known, but it means the resulting policy
+is a policy for \emph{this vehicle}, not a policy for quadrotors.
+
+Two general statements follow. First, randomization widens support; it does
+not move the center, and the two are not interchangeable. Second, the cheapest
+diagnostic for a suspected support failure is not a wider sweep but a single
+rollout at the hypothesized nominal.
+
+\subsection{Randomization width after identification}
+
+With the nominal corrected we tested whether tightening the remaining ranges
+(thrust-to-weight $\pm4\%$, drag $0.8$--$1.2\times$, PID $\pm8\%/\pm15\%$)
+would buy speed. Across four candidates it did not: the best tight-bound run
+reached $98.3\%$ at $19.46$\,s, slower than the base. We read this as
+evidence that once the nominal is right, the residual gap for this policy
+family is geometric---racing line and clearance---rather than a
+randomization-width effect, and that further width tuning was not the correct
+tool. Action-latency randomization was retained regardless, for reasons
+Section~\ref{sec:eval} makes clear.
+
+\section{Evaluation and Policy Selection}
+\label{sec:eval}
+
+Three separate evaluation-design failures cost us more than any modeling
+error, and we believe they generalize.
+
+\subsection{Training return is not the deployment objective}
+
+The training framework saves \code{best\_model.pt} at the argmax of mean
+episodic training return. Nothing about that quantity optimizes what
+deployment requires: three-lap success rate, low variance, and a bounded
+worst case. The gap is not academic. In one run the saved best model was
+written at approximately iteration $513$ at a mean training return of
+$5746.86$; its batch evaluation was $84.7\%$ success, $19.09$\,s mean,
+$1.26$\,s standard deviation, and a $28.44$\,s worst case---a checkpoint that
+wins on return by flying fast and occasionally failing badly, which is
+exactly the profile training return cannot distinguish from a good one.
+
+We replaced the rule with an explicit selection procedure: assemble a
+candidate pool (the saved best model plus the highest-return checkpoints
+across the run, plus a few late-training anchors so that a single reward
+spike cannot monopolize the pool), evaluate every candidate under the
+deployment-matched protocol, and accept only if success rate
+$\geq 98.5\%$, mean time $\leq 18.65$\,s, standard deviation $\leq 0.5$\,s,
+and no pathological tail. \textbf{A faster best case is never sufficient
+evidence}---a rule we adopted only after a candidate that won on best-case
+time failed in the arena.
+
+\subsection{Failure one: an evaluation distribution deployment never samples}
+
+Our batch evaluation runs the environment with training-mode hooks active so
+that the dynamics and reset machinery behave normally. A consequence we did
+not notice for some time is that it therefore inherits the \emph{training}
+reset mixture. With a ground-start fraction of $0.2$, a nominally
+$1000$-environment evaluation contained roughly $210$ ground starts; the
+remaining $790$ began mid-course, at altitude, with the buffered state of a
+policy that had already succeeded. Every physical run begins on the floor at
+rest.
+
+The fix is a deployment-matched profile forcing the ground-start fraction to
+unity, reported alongside a distinct ground-start success rate. We also
+learned to write these results to separate directories, because the most
+dangerous artifact of an evaluation bug is a stale result file that silently
+answers a question you have since changed.
+
+\subsection{Failure two: an evaluation calibrated past the point of usefulness}
+
+Having identified real parameters, the natural next step was an evaluation
+profile that used them: identified thrust-to-weight, a fixed three-step
+action delay matching the measured $60$--$70$\,ms command lag, ground starts
+only, the narrow launch-pose distribution, and observation noise reduced from
+the training value of $0.05$\,m/s to the measured stationary
+$0.005$\,m/s. Since a physical session is one vehicle on one day, this seemed
+strictly more faithful than randomizing broadly.
+
+We backtested it against three policies whose real-world ranking we already
+knew. The result is in Table~\ref{tab:backtest}. The calibrated profile
+ranked \emph{first} the policy that in the arena completed a single correctly
+ordered lap with negative clearance at a gate, and gave all three policies
+$100\%$ success with standard deviations under $0.1$\,s. A latency stress
+variant exposed fragility but over-penalized a policy that had completed four
+ordered laps. Meanwhile the older, less faithful, reset-diverse screen
+correctly kept the base policy first.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Backtest of evaluation profiles against known physical outcomes.
+Real ranking: base $>$ speed-v4 $>$ speed-v2.}
+\label{tab:backtest}
+\begin{tabular}{@{}l r r r@{}}
+\toprule
+Policy & Calib.\ & Latency & Reset-diverse \\
+       & mean (s) & stress SR & SR / mean (s) \\
+\midrule
+base     & $18.24$ & $100.0\%$ & $98.0\%$ / $18.34$ \\
+speed-v2 & $\mathbf{17.96}$ & $45.7\%$ & $96.2\%$ / $18.68$ \\
+speed-v4 & $18.57$ & $15.2\%$ & $98.0\%$ / $18.80$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The lesson is not that calibration is wrong but that an evaluation serves two
+distinct purposes---estimating performance and \emph{discriminating between
+candidates}---and calibrating away the diversity destroys the second. The
+perturbations that a faithful single-vehicle profile removes are exactly the
+ones under which a fragile policy separates from a robust one. We now require
+agreement between the reset-diverse screen, targeted stress checks, and
+physical logs before promoting a policy, and treat the calibrated profile as
+a diagnostic slice only.
+
+We note the honest limit of this conclusion: the reset-diverse screen did not
+predict the speed-v2 failure either. It flagged lower success and much larger
+variance, which was enough to rank correctly, but the underlying failure mode
+was gate clearance, and no fixed-parameter profile of any calibration can
+surface a clearance problem. That remains open.
+
+\section{Results}
+
+\subsection{Simulation under deployment-matched conditions}
+
+\begin{table}[t]
+\centering
+\small
+\caption{Checkpoint selection under the deployment-matched protocol
+($1000$ ground starts, $1000/1000$ ground-start fraction). SR, takeoff
+success, and first-gate success were $100\%$ for all rows shown.}
+\label{tab:groundonly}
+\begin{tabular}{@{}l r r r@{}}
+\toprule
+Policy family & Mean (s) & $\sigma$ (s) & Worst (s) \\
+\midrule
+base, $5000$ iter & $\mathbf{18.10}$ & $0.08$ & $18.36$ \\
+inner-gate $0.8$  & $18.26$ & $0.05$ & $18.40$ \\
+ground-start $20\%$ & $18.59$ & $0.16$ & $20.24$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Under the reset-diverse screen the deployed policy family reached
+$98.0$--$98.2\%$ three-lap success at $18.32$--$18.34$\,s
+($\sigma = 0.41$--$0.48$\,s). Under the deployment-matched ground-only
+protocol (Table~\ref{tab:groundonly}) the selected checkpoint reached $100\%$
+success at $18.10$\,s with $\sigma = 0.08$\,s. The variance collapse between
+protocols is expected and is itself a useful diagnostic: nearly all of the
+reset-diverse variance comes from start-state diversity rather than from
+dynamics.
+
+\subsection{Speed candidates}
+
+\begin{table*}[t]
+\centering
+\small
+\caption{Reward variants targeting lap time, evaluated under the
+reset-diverse screen. No variant improved mean time at matched success rate.}
+\label{tab:speed}
+\begin{tabular}{@{}l l r r r r r@{}}
+\toprule
+Candidate & Reward change & Envs & SR (\%) & Mean (s) & $\sigma$ (s) & Best (s) \\
+\midrule
+base & --- & $768$ & $\mathbf{98.0}$ & $\mathbf{18.34}$ & $0.48$ & $17.50$ \\
+speed-v1 & broad time and control pressure & $1000$ & $86.7$ & $20.39$ & $2.12$ & $17.56$ \\
+speed-v2 & post-loop velocity term, gates $[4,5,6,0]$ & $1000$ & $96.2$ & $18.68$ & $1.21$ & $\mathbf{17.44}$ \\
+speed-v3 & narrowed velocity term, gates $[5,6]$ & $1000$ & $\mathbf{98.8}$ & $19.05$ & $\mathbf{0.42}$ & $18.16$ \\
+speed-v4 & velocity term without next-gate blend & $1000$ & $98.0$ & $18.80$ & $0.43$ & $18.04$ \\
+speed-v5 & mild time pressure only & $1000$ & $94.2$ & $21.73$ & $2.55$ & $17.90$ \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+Table~\ref{tab:speed} summarizes five attempts to recover speed by reward
+modification, all under fixed dynamics and reset settings. None improved mean
+time at matched success rate. Two observations. First, the candidate with the
+fastest single rollout ($17.44$\,s) had the second-worst variance and failed
+in the arena---which is the empirical basis for the selection rule in
+Section~\ref{sec:eval}. Second, reintroducing a velocity term narrowly and
+weakly (speed-v3, speed-v4) produced stable but slower policies, suggesting
+that the dense-to-sparse decision is not finely tunable in this setting: a
+small amount of dense shaping bought neither the speed of the simulation-phase
+configuration nor an improvement over none at all.
+
+\subsection{Physical evaluation}
+
+The deployed policy completed the timed three-lap evaluation in
+$\mathbf{19.004}$\,s and continued to five correctly ordered laps at a mean
+lap time of $6.236$\,s, with lap timing recovered from flight logs under a
+strict gate-ordering rule that rejects laps containing skipped or misordered
+gates. Against the deployment-matched simulation prediction of $18.10$\,s,
+the residual gap is approximately $0.9$\,s, or $5\%$.
+
+We do not have an explanation for the residual, and we want to be precise
+about why. The three candidate mechanisms---gate clearance margins, gate
+geometry calibration, and rate-loop overshoot not captured by our first-order
+motor model---are all consistent with the sensitivity analysis, which found
+gate-corner bias to be the second most damaging perturbation we tested. But
+Section~\ref{sec:eval} establishes that a fixed-parameter evaluation profile
+cannot discriminate among them, and we did not have the open-loop excitation
+data needed to identify the rate loop. The gap is open.
+
+The two alternative policies flown in the same session ranked in the order
+predicted by the reset-diverse screen and against the order predicted by the
+calibrated profile, which is the evidence behind Table~\ref{tab:backtest}.
+
+\section{Discussion}
+
+The recurring pattern across both phases is that the components most
+responsible for outcomes were not the ones the literature foregrounds. The
+learning algorithm was standard and never a bottleneck. Network capacity was
+set by an interface constraint rather than by a study. The reward function
+mattered, but mostly through a handful of near-discontinuous thresholds---a
+sparse bonus that must exceed an integrated cost, a blending coefficient with
+a stability boundary---rather than through smooth tuning.
+
+What repeatedly determined outcomes were three objects usually left
+implicit:
+
+\textbf{The relationship between the reward predicate and the progress
+predicate.} On a course whose task graph self-intersects, a single geometric
+test cannot serve both. Conflating them meant that every attempt to make the
+policy more conservative also redefined what counted as progress.
+
+\textbf{The initial-state distribution.} The largest single improvement in
+the simulation phase came from changing where episodes start, not what they
+reward. In the transfer phase, the replay buffer's construction---including
+the actuator-state reconstruction most descriptions omit---determined which
+regions of the state space carried reliable value estimates.
+
+\textbf{The evaluation harness.} It failed in both directions. Made more
+diverse than deployment, it measured a task nobody would run. Calibrated to
+match deployment exactly, it lost the ability to discriminate between
+candidates and ranked a policy first that failed in the arena. We now think
+of these as different instruments with different purposes and refuse to use
+either alone.
+
+On randomization specifically, our experience supports a narrower
+prescription than the standard one. Identify the nominal first; verify it
+with a single rollout at the hypothesized value before committing training
+time; then randomize narrowly, and spend the budget where a sensitivity
+analysis says the policy is actually fragile. For us that was the observation
+map, not the transition model---the opposite of where dynamics-randomization
+practice \cite{tobin2017,peng2018} directs attention, and, we suspect, a
+consequence of using motion capture, which removes the perception gap and
+leaves only a small, systematic, and easily overlooked pipeline bias in its
+place \cite{kaufmann2023}.
+
+\section{Limitations and Future Work}
+
+Our identification of the transition model rests on closed-loop race logs,
+which are policy-biased and not persistently exciting. They constrain
+effective thrust authority and command latency adequately and say very little
+about motor time constant, aerodynamic drag, or rate-loop bandwidth. The
+appropriate remedy is a dedicated open-loop identification flight with a
+phase-structured, time-budgeted excitation schedule---static and hover phases
+for mass and observation bias, vertical chirps for the thrust curve and motor
+lag, per-axis rate chirps for bandwidth, straight-line segments for drag and
+for velocity-estimator lag, and gate flybys to measure gate-corner
+calibration error directly. We designed this protocol but did not fly it.
+
+The sensitivity analysis identified observation bias as the dominant risk but
+we never measured the real bias, so the corresponding randomization ranges
+are hypotheses. The most direct next experiment is to measure stationary
+velocity bias and gate-corner calibration error, randomize over the measured
+uncertainty, and re-run the sweep with the elimination of the $2.9\%$ collapse
+as an explicit go/no-go criterion.
+
+We deliberately did not pursue residual dynamics learning
+\cite{kaufmann2023}, in which a learned model corrects simulator error from
+real transitions. With the nominal misidentified by a factor approaching two,
+a residual model would have been asked to absorb a gross parametric error,
+which is both harder to fit and much harder to debug than correcting the
+parameter. Once identification is complete, residual learning becomes the
+natural next step, and the criterion for needing it is concrete: retrain under
+identified randomization, overlay simulated and real state-distribution
+envelopes for velocity, tilt, and body rate, and invoke a residual model only
+where real coverage exceeds simulated coverage on a specific axis and the
+discrepancy has structure that widening a parameter range cannot absorb.
+
+Finally, all results are for a single track, a single vehicle, and a single
+arena. The re-centering result in particular produces a specialized policy by
+construction, and we have no evidence about how the sensitivity ordering
+between observation and dynamics perturbations would change under a
+perception-based state estimator, where the observation map is far noisier
+and far less systematic than motion capture.
+
+\begin{thebibliography}{99}
+\small
+
+\bibitem{amodei2016}
+D.~Amodei, C.~Olah, J.~Steinhardt, P.~Christiano, J.~Schulman, and D.~Man\'e.
+\newblock Concrete problems in AI safety.
+\newblock \emph{arXiv:1606.06565}, 2016.
+
+\bibitem{ferede2025}
+R.~Ferede et al.
+\newblock One net to rule them all: Domain randomization in quadcopter racing
+across different platforms.
+\newblock \emph{arXiv:2504.21586}, 2025.
+
+\bibitem{kaufmann2023}
+E.~Kaufmann, L.~Bauersfeld, A.~Loquercio, M.~M\"uller, V.~Koltun, and
+D.~Scaramuzza.
+\newblock Champion-level drone racing using deep reinforcement learning.
+\newblock \emph{Nature}, 620:982--987, 2023.
+
+\bibitem{loquercio2020}
+A.~Loquercio, E.~Kaufmann, R.~Ranftl, A.~Dosovitskiy, V.~Koltun, and
+D.~Scaramuzza.
+\newblock Deep drone racing: From simulation to reality with domain
+randomization.
+\newblock \emph{IEEE Transactions on Robotics}, 36(1):1--14, 2020.
+
+\bibitem{mittal2023}
+M.~Mittal et al.
+\newblock Orbit: A unified simulation framework for interactive robot learning
+environments.
+\newblock \emph{IEEE Robotics and Automation Letters}, 8(6):3740--3747, 2023.
+
+\bibitem{ng1999}
+A.~Y. Ng, D.~Harada, and S.~Russell.
+\newblock Policy invariance under reward transformations: Theory and
+application to reward shaping.
+\newblock In \emph{ICML}, 1999.
+
+\bibitem{pasumarti2025}
+P.~Pasumarti, F.~Bianchi, and A.~Loquercio.
+\newblock Agile flight emerges from multi-agent competitive racing.
+\newblock \emph{arXiv:2512.11781}, 2025.
+
+\bibitem{peng2018}
+X.~B. Peng, M.~Andrychowicz, W.~Zaremba, and P.~Abbeel.
+\newblock Sim-to-real transfer of robotic control with dynamics randomization.
+\newblock In \emph{ICRA}, 2018.
+
+\bibitem{rudin2022}
+N.~Rudin, D.~Hoeller, P.~Reist, and M.~Hutter.
+\newblock Learning to walk in minutes using massively parallel deep
+reinforcement learning.
+\newblock In \emph{CoRL}, 2022.
+
+\bibitem{schulman2016}
+J.~Schulman, P.~Moritz, S.~Levine, M.~I. Jordan, and P.~Abbeel.
+\newblock High-dimensional continuous control using generalized advantage
+estimation.
+\newblock In \emph{ICLR}, 2016.
+
+\bibitem{schulman2017}
+J.~Schulman, F.~Wolski, P.~Dhariwal, A.~Radford, and O.~Klimov.
+\newblock Proximal policy optimization algorithms.
+\newblock \emph{arXiv:1707.06347}, 2017.
+
+\bibitem{song2023}
+Y.~Song, A.~Romero, M.~M\"uller, V.~Koltun, and D.~Scaramuzza.
+\newblock Reaching the limit in autonomous racing: Optimal control versus
+reinforcement learning.
+\newblock \emph{Science Robotics}, 8(82), 2023.
+
+\bibitem{tobin2017}
+J.~Tobin, R.~Fong, A.~Ray, J.~Schneider, W.~Zaremba, and P.~Abbeel.
+\newblock Domain randomization for transferring deep neural networks from
+simulation to the real world.
+\newblock In \emph{IROS}, 2017.
+
+\end{thebibliography}
+
+\end{document}
