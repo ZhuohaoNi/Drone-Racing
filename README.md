@@ -18,7 +18,7 @@ Everything else follows from that.
 | Branch | Phase | What it optimizes | Track | Success criterion |
 |---|---|---|---|---|
 | [`main`](../../tree/main) | Phase 1 — sim racing | Lap time under evaluation-time domain randomization | `powerloop` (7 gates) | 3 laps, no crash, fastest mean time |
-| **`sim2real`** | Phase 2/3 — real deployment | Zero-crash transfer to a physical Crazyflie | `circle` (4 gates) → `powerloop` | 3 real laps, no crash; speed second |
+| **`sim2real`** | Phase 2/3 — real deployment | Zero-crash transfer to a physical Crazyflie | `powerloop` (7 gates) | 3 real laps, no crash; speed second |
 
 ### What actually differs from `main`
 
@@ -30,7 +30,7 @@ Everything else follows from that.
 | Reward | Dense speed shaping: progress 50, racing-line velocity 8 | Sparse/event core: gate pass 200, light progress 20, lap bonus, command regularization on body rates, action smoothness, crash penalties |
 | Reset | Gate-relative spawns, mid-track spawns, velocity init | Gate-relative + **successful-state replay resets** (staged in over training) + ground/real-start resets |
 | Domain randomization | Wide, tuned to beat an evaluation script | Tuned to *measured* hardware: nominal TWR from real bags, narrow band around it, plus latency and observation-mismatch models |
-| Strategy class | `DefaultQuadcopterStrategy` | `CircleQuadcopterStrategy` (the default; the name is historical, it is **not** tied to the `circle` track) |
+| Strategy class | `DefaultQuadcopterStrategy` |
 
 ---
 
@@ -52,7 +52,7 @@ infrastructure.
 - **`rotorpy`** — submodule from [`Jirl-upenn/rotorpy`](https://github.com/Jirl-upenn/rotorpy).
 - **Isaac Lab / Isaac Sim** — NVIDIA.
 
-**Ours:** the PPO update and vectorized GAE, `CircleQuadcopterStrategy` in its entirety
+**Ours:** the PPO update and vectorized GAE in its entirety
 (40-dim observation, sparse reward core, replay/ground reset sampling, split gate semantics,
 sim2real randomization), the override mechanism in `train_race.py`, everything in
 `scripts/run/` and `scripts/analysis/`, `robustness_sweep.py`, the checkpoint-selection
