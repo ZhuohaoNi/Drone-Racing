@@ -1,4 +1,4 @@
-# Drone Racing — RL Policy Training (Isaac Lab)
+# Drone Racing — RL Policy Training
 
 ESE 6510 *Physical Intelligence* (UPenn) drone racing project by **Zhuohao Ni** and **Bruce (Yuqian) Zhang**.
 
@@ -15,8 +15,8 @@ branch per phase.
 
 | Branch | Phase | What it optimizes | Track | Success criterion |
 |---|---|---|---|---|
-| **`main`** | Phase 1 — sim racing | Lap time under the course's evaluation-time domain randomization | `powerloop` (7 gates: vertical loop + chicane) | 3 laps, no crash, fastest mean time |
-| **`sim2real`** | Phase 2/3 — real deployment | Zero-crash transfer to a physical Crazyflie over Vicon | `circle` (4 gates) → `powerloop` | 3 real laps, no crash; speed is secondary |
+| **`main`** | Phase 1 — sim racing | Lap time under the course's evaluation-time domain randomization | `powerloop` (7 gates) | 3 laps, no crash, fastest mean time |
+| **`sim2real`** | Phase 2/3 — real deployment | Zero-crash transfer to a physical Crazyflie over Vicon | `powerloop` (7 gates) | 3 real laps, no crash; speed is secondary |
 
 The two branches share the same Isaac Lab task skeleton but diverge in almost every
 learning-side decision — observation layout, reward terms, reset sampling, and domain
